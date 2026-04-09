@@ -1,4 +1,4 @@
-# VitaAI Backend
+# Recallth Backend
 
 ## Tech Stack
 - **Runtime:** Node.js + Express + TypeScript
@@ -27,8 +27,8 @@ tsc --noEmit       # Type check
 ```
 
 ## Related Repos
-- Mobile: wkliwk/vitaai-mobile (Expo/React Native)
-- Web: wkliwk/vitaai-web (Next.js)
+- Mobile: wkliwk/recallth-mobile (Expo/React Native)
+- Web: wkliwk/recallth-web (Next.js)
 
 ## Product Context
 AI health advisor with persistent memory. Users onboard once (health profile, supplements, medications, goals) and get personalised advice without repeating themselves. Core API serves both mobile and web clients.

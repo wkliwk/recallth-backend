@@ -1,10 +1,10 @@
-# VitaAI — Product Documentation
+# Recallth — Product Documentation
 
 ## Overview
 
-**VitaAI** is an AI-powered personal health advisor with persistent memory. Users tell it once about their body, habits, goals, supplements, and medications. From then on, every health question gets a personalised answer based on their complete profile.
+**Recallth** is an AI-powered personal health advisor with persistent memory. Users tell it once about their body, habits, goals, supplements, and medications. From then on, every health question gets a personalised answer based on their complete profile.
 
-**Core problem:** Every time you ask ChatGPT or Google a health question, you have to re-explain your height, weight, supplements, conditions, goals, etc. VitaAI remembers everything and gives personalised advice instantly.
+**Core problem:** Every time you ask ChatGPT or Google a health question, you have to re-explain your height, weight, supplements, conditions, goals, etc. Recallth remembers everything and gives personalised advice instantly.
 
 **Target user:** Health-conscious individuals (20-45) who take supplements, exercise regularly, and want a single trusted source for managing their wellness.
 
