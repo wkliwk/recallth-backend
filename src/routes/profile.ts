@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { HealthProfile, IChangeEntry } from '../models/HealthProfile';
 import { CabinetItem } from '../models/CabinetItem';
+import { FamilyMember } from '../models/FamilyMember';
 import { MODELS } from '../config/models';
 
 const getGenAI = () => {
@@ -14,9 +15,23 @@ const getGenAI = () => {
 
 const router = Router();
 
-// All routes in this file are protected — authenticate is applied at mount time
-// in index.ts, so we re-declare it here only for the inline router usage.
-// The router itself is exported and mounted with authenticate already applied.
+// ─── Family member scope helper ───────────────────────────────────────────
+
+/**
+ * If ?memberId= is present, validate it belongs to the authed user and return
+ * the member's ObjectId as the effective userId. Otherwise return the authed userId.
+ * Returns null if memberId is invalid or not owned by the authed user.
+ */
+async function resolveScopedUserId(
+  ownerId: Types.ObjectId,
+  memberId?: string
+): Promise<Types.ObjectId | null> {
+  if (!memberId) return ownerId;
+  if (!Types.ObjectId.isValid(memberId)) return null;
+  const member = await FamilyMember.findOne({ _id: memberId, ownerId }).lean();
+  if (!member) return null;
+  return member._id as Types.ObjectId;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -69,7 +84,12 @@ function buildChangeEntries(
 // ─── GET /profile ──────────────────────────────────────────────────────────
 
 router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new Types.ObjectId(req.userId);
+  const ownerId = new Types.ObjectId(req.userId);
+  const userId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!userId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
 
   const profile = await HealthProfile.findOne({ userId });
 
@@ -98,7 +118,12 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
 // ─── PUT /profile ──────────────────────────────────────────────────────────
 
 router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new Types.ObjectId(req.userId);
+  const ownerId = new Types.ObjectId(req.userId);
+  const userId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!userId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
 
   // Only accept recognised top-level category keys
   const ALLOWED_CATEGORIES = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals', 'bloodwork'] as const;
@@ -190,7 +215,8 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
 // ─── GET /profile/weight-trend ─────────────────────────────────────────────
 
 router.get('/weight-trend', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
-  const userId = new Types.ObjectId(req.userId);
+  const ownerId = new Types.ObjectId(req.userId);
+  const userId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined) ?? ownerId;
 
   const profile = await HealthProfile.findOne({ userId }, { changeHistory: 1, 'body.weight': 1 }).lean();
 
