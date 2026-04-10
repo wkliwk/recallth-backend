@@ -1,11 +1,23 @@
 import { Router, Response, Request } from 'express';
-import mongoose from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import crypto from 'crypto';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { CabinetItem, CabinetItemType } from '../models/CabinetItem';
 import { SharedStack } from '../models/SharedStack';
+import { FamilyMember } from '../models/FamilyMember';
 import { MODELS } from '../config/models';
+
+async function resolveScopedUserId(
+  ownerId: Types.ObjectId,
+  memberId?: string
+): Promise<Types.ObjectId | null> {
+  if (!memberId) return ownerId;
+  if (!Types.ObjectId.isValid(memberId)) return null;
+  const member = await FamilyMember.findOne({ _id: memberId, ownerId }).lean();
+  if (!member) return null;
+  return member._id as Types.ObjectId;
+}
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -17,6 +29,13 @@ const router = Router();
 
 // POST /cabinet — add item
 router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
+  const ownerId = new Types.ObjectId(req.userId);
+  const scopedUserId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!scopedUserId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
+
   const { name, type, dosage, frequency, timing, brand, notes, active, startDate, endDate, source, price, currency } = req.body;
 
   if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -31,7 +50,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 
   const item = await CabinetItem.create({
-    userId: req.userId,
+    userId: scopedUserId,
     name: name.trim(),
     type,
     dosage,
@@ -56,7 +75,13 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
 
 // GET /cabinet — list user's items with optional filters
 router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
-  const query: Record<string, unknown> = { userId: req.userId };
+  const ownerId = new Types.ObjectId(req.userId);
+  const scopedUserId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!scopedUserId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
+  const query: Record<string, unknown> = { userId: scopedUserId };
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
   if (req.query.type) {
