@@ -1,7 +1,9 @@
-import { Router, Response } from 'express';
+import { Router, Response, Request } from 'express';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 import { AuthRequest } from '../middleware/auth';
 import { CabinetItem, CabinetItemType } from '../models/CabinetItem';
+import { SharedStack } from '../models/SharedStack';
 
 const router = Router();
 
@@ -177,6 +179,34 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
       error: null,
     });
   }
+});
+
+// POST /cabinet/share — create shareable link for active stack
+router.post('/share', async (req: AuthRequest, res: Response): Promise<void> => {
+  const token = crypto.randomBytes(6).toString('hex'); // 12-char hex
+  await SharedStack.create({ token, userId: req.userId });
+
+  const frontendUrl = process.env.FRONTEND_URL ?? 'https://recallth-web.vercel.app';
+  const shareUrl = `${frontendUrl}/shared-stack/${token}`;
+
+  res.status(201).json({ success: true, error: null, data: { token, shareUrl } });
+});
+
+// GET /cabinet/shared/:token — public view of a shared stack (no auth)
+router.get('/shared/:token', async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.params as { token: string };
+
+  const shared = await SharedStack.findOne({ token }).lean();
+  if (!shared) {
+    res.status(404).json({ success: false, error: 'Shared stack not found', data: null });
+    return;
+  }
+
+  const items = await CabinetItem.find({ userId: shared.userId, active: true })
+    .select('name type dosage frequency timing brand')
+    .lean();
+
+  res.json({ success: true, error: null, data: { items } });
 });
 
 // GET /cabinet/budget-summary — monthly spend summary
