@@ -155,11 +155,22 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     }
   }
 
-  const items = await CabinetItem.find(query).sort({ createdAt: -1 });
+  const items = await CabinetItem.find(query).sort({ createdAt: -1 }).lean();
+
+  const itemsWithComputed = items.map((item) => {
+    const threshold = item.restockThresholdDays ?? 7;
+    let daysSupplyRemaining: number | null = null;
+    let lowSupplyWarning = false;
+    if (item.quantityRemaining != null && item.dailyDoseCount != null && item.dailyDoseCount > 0) {
+      daysSupplyRemaining = Math.floor(item.quantityRemaining / item.dailyDoseCount);
+      lowSupplyWarning = daysSupplyRemaining <= threshold;
+    }
+    return { ...item, daysSupplyRemaining, lowSupplyWarning };
+  });
 
   res.json({
     success: true,
-    data: items,
+    data: itemsWithComputed,
     error: null,
   });
 });
@@ -184,7 +195,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
@@ -770,6 +781,34 @@ ${items.map((i) => `- id: ${(i._id as Types.ObjectId).toString()} | name: ${i.na
     console.error('[GET /cabinet/schedule/optimized]', err);
     res.status(500).json({ success: false, data: null, error: 'Schedule optimization failed' });
   }
+});
+
+// GET /cabinet/restock-alerts — items with low supply warning
+router.get('/restock-alerts', async (req: AuthRequest, res: Response): Promise<void> => {
+  const ownerId = new Types.ObjectId(req.userId);
+  const scopedUserId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!scopedUserId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
+
+  const items = await CabinetItem.find({ userId: scopedUserId, active: true }).lean();
+
+  const alerts = items
+    .filter((item) => {
+      if (item.quantityRemaining == null || item.dailyDoseCount == null || item.dailyDoseCount <= 0) return false;
+      const daysSupply = Math.floor(item.quantityRemaining / item.dailyDoseCount);
+      const threshold = item.restockThresholdDays ?? 7;
+      return daysSupply <= threshold;
+    })
+    .map((item) => ({
+      id: (item._id as Types.ObjectId).toString(),
+      name: item.name,
+      daysSupplyRemaining: Math.floor(item.quantityRemaining! / item.dailyDoseCount!),
+      quantityRemaining: item.quantityRemaining!,
+    }));
+
+  res.json({ success: true, data: { alerts }, error: null });
 });
 
 // GET /cabinet/schedule — group active items by time-of-day slot

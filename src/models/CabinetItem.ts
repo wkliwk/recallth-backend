@@ -26,6 +26,9 @@ export interface ICabinetItem extends Document {
   price?: number;
   currency?: string;
   researchNotes?: IResearchNotes;
+  quantityRemaining?: number;
+  dailyDoseCount?: number;
+  restockThresholdDays?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -105,6 +108,9 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
       ),
       default: undefined,
     },
+    quantityRemaining: { type: Number, min: 0 },
+    dailyDoseCount: { type: Number, min: 0 },
+    restockThresholdDays: { type: Number, min: 0 },
   },
   { timestamps: true }
 );
