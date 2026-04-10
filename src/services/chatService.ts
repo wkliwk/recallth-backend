@@ -4,6 +4,8 @@ import { HealthProfile, IHealthProfile } from '../models/HealthProfile';
 import { CabinetItem, ICabinetItem } from '../models/CabinetItem';
 import { ExtractionReview } from '../models/ExtractionReview';
 import { Conversation } from '../models/Conversation';
+import { DailyLog, IDailyLog } from '../models/DailyLog';
+import { SideEffect, ISideEffect } from '../models/SideEffect';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 
@@ -54,11 +56,36 @@ function buildLanguageInstruction(language: DetectedLanguage): string {
   }
 }
 
+// --- Journal and side-effect context builders ---
+function buildJournalContext(logs: IDailyLog[]): string {
+  if (logs.length === 0) return '';
+  const avgMood = (logs.reduce((sum, l) => sum + l.mood, 0) / logs.length).toFixed(1);
+  const avgEnergy = (logs.reduce((sum, l) => sum + l.energy, 0) / logs.length).toFixed(1);
+  const entries = logs.map((l) => {
+    const noteStr = l.notes ? ` Notes: "${l.notes.slice(0, 100)}"` : '';
+    return `  ${l.date}: mood=${l.mood}/5, energy=${l.energy}/5${noteStr}`;
+  });
+  // ~300 tokens estimated for 7 entries
+  return `\nRECENT JOURNAL SUMMARY (last 7 days, avg mood=${avgMood}/5, avg energy=${avgEnergy}/5):\n${entries.join('\n')}`;
+}
+
+function buildSideEffectContext(effects: ISideEffect[]): string {
+  if (effects.length === 0) return '';
+  const entries = effects.map((e) => {
+    const date = e.date instanceof Date ? e.date.toISOString().slice(0, 10) : String(e.date);
+    return `  ${date}: symptom="${e.symptom}", severity=${e.rating}/5`;
+  });
+  // ~250 tokens estimated for 10 entries
+  return `\nRECENT SIDE EFFECTS (last 30 days):\n${entries.join('\n')}`;
+}
+
 // --- System prompt builder ---
 function buildSystemPrompt(
   profile: IHealthProfile | null,
   cabinetItems: ICabinetItem[],
-  language: DetectedLanguage
+  language: DetectedLanguage,
+  journalLogs: IDailyLog[],
+  sideEffects: ISideEffect[]
 ): string {
   const profileData = profile
     ? {
@@ -82,6 +109,8 @@ function buildSystemPrompt(
   }));
 
   const languageInstruction = buildLanguageInstruction(language);
+  const journalContext = buildJournalContext(journalLogs);
+  const sideEffectContext = buildSideEffectContext(sideEffects);
 
   return `You are Recallth, a personal AI health advisor with perfect memory of this user's health profile.
 
@@ -90,6 +119,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
+${journalContext}${sideEffectContext}
 
 ${languageInstruction}
 
@@ -352,10 +382,18 @@ export async function processChat(
   // Detect language from user message
   const language = detectLanguage(userMessage);
 
-  // Load profile and cabinet in parallel
-  const [profile, cabinetItems] = await Promise.all([
+  // Load profile, cabinet, journal, and side effects in parallel
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const sevenDaysAgoISO = sevenDaysAgo.toISOString().slice(0, 10);
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const [profile, cabinetItems, journalLogs, sideEffects] = await Promise.all([
     HealthProfile.findOne({ userId: userObjectId }),
     CabinetItem.find({ userId: userObjectId, active: true }),
+    DailyLog.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(7),
+    SideEffect.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: -1 }).limit(10),
   ]);
 
   // Fetch or create conversation
@@ -392,7 +430,7 @@ export async function processChat(
   }));
 
   // Call Gemini for chat response
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects);
   const model = getGenAI().getGenerativeModel({
     model: MODELS.CHAT,
     systemInstruction: systemPrompt,
