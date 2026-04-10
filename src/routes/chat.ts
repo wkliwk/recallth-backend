@@ -200,4 +200,75 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
   }
 });
 
+// ─── GET /chat/gym-nutrition ─────────────────────────────────────────────────
+
+interface GymNutritionResponse {
+  timing: string;
+  foods: Array<{ name: string; amount: string; reason: string }>;
+  supplements: Array<{ name: string; timing: string; reason: string }>;
+  summary: string;
+}
+
+chatRouter.get('/gym-nutrition', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId as string;
+  const userObjectId = new Types.ObjectId(userId);
+
+  try {
+    const [profile, cabinetItems] = await Promise.all([
+      HealthProfile.findOne({ userId: userObjectId }).lean(),
+      CabinetItem.find({ userId: userObjectId, active: true }).lean(),
+    ]);
+
+    const profileSummary = profile
+      ? {
+          body: profile.body,
+          exercise: profile.exercise,
+          goals: profile.goals,
+        }
+      : null;
+
+    const cabinetSummary = cabinetItems.map((i) => ({
+      name: i.name,
+      type: i.type,
+      dosage: i.dosage,
+      timing: i.timing,
+    }));
+
+    const prompt = `You are a sports nutritionist. Based on the user's profile and supplement cabinet, provide post-workout nutrition advice.
+
+USER PROFILE:
+${JSON.stringify(profileSummary, null, 2)}
+
+SUPPLEMENT CABINET:
+${JSON.stringify(cabinetSummary, null, 2)}
+
+Instructions:
+- Recommend when to eat post-workout (e.g. within 30 minutes, within 2 hours)
+- Suggest 3-5 specific foods with amounts and reasons
+- Reference their actual supplement stack — which ones to take post-workout and why
+- Align with their fitness goals (muscle gain, fat loss, endurance, etc.)
+- If exercise profile is empty, give general post-workout advice
+
+Return ONLY valid JSON (no markdown):
+{
+  "timing": "...",
+  "foods": [{ "name": "...", "amount": "...", "reason": "..." }],
+  "supplements": [{ "name": "...", "timing": "...", "reason": "..." }],
+  "summary": "..."
+}`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const gymNutrition = JSON.parse(cleaned) as GymNutritionResponse;
+
+    res.status(200).json({ success: true, error: null, data: gymNutrition });
+  } catch (err) {
+    console.error('[GET /chat/gym-nutrition]', err);
+    res.status(500).json({ success: false, error: 'Failed to generate gym nutrition advice', data: null });
+  }
+});
+
 export default chatRouter;
