@@ -11,6 +11,7 @@ export interface IMessage {
 export interface IConversation extends Document {
   userId: Types.ObjectId;
   title: string;
+  summary: string;
   messages: IMessage[];
   createdAt: Date;
   updatedAt: Date;
@@ -29,6 +30,7 @@ const ConversationSchema = new Schema<IConversation>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     title: { type: String, required: true, default: 'New Conversation' },
+    summary: { type: String, default: '' },
     messages: [MessageSchema],
   },
   { timestamps: true }
