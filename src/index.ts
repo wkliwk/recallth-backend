@@ -8,6 +8,7 @@ import authRouter from './routes/auth';
 import authGoogleRouter from './routes/authGoogle';
 import profileRouter from './routes/profile';
 import cabinetRouter from './routes/cabinet';
+import chatRouter from './routes/chat';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -24,6 +25,7 @@ app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
 app.use('/cabinet', authenticate, cabinetRouter);
+app.use('/chat', authenticate, chatRouter);
 
 // Error handling
 app.use(errorHandler);
