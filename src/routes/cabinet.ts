@@ -595,6 +595,183 @@ Do NOT include markdown fences. Return only the JSON array.`;
   }
 });
 
+// GET /cabinet/schedule/optimized — AI-powered timing optimizer with interaction awareness
+router.get('/schedule/optimized', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const ownerId = new Types.ObjectId(req.userId);
+    const scopedUserId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+    if (!scopedUserId) {
+      res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+      return;
+    }
+
+    const [items, profile] = await Promise.all([
+      CabinetItem.find({ userId: scopedUserId, active: true }).lean(),
+      HealthProfile.findOne({ userId: scopedUserId }).lean(),
+    ]);
+
+    if (items.length === 0) {
+      res.json({
+        success: true,
+        error: null,
+        data: {
+          schedule: [],
+          optimizationNotes: 'No active supplements in your cabinet.',
+        },
+      });
+      return;
+    }
+
+    // Parse lifestyle params from query
+    const wakeTime = (req.query.wakeTime as string | undefined) ?? '07:00';
+    const sleepTime = (req.query.sleepTime as string | undefined) ?? '23:00';
+    const mealTimesRaw = req.query.mealTimes as string | undefined;
+    const mealTimes = mealTimesRaw
+      ? mealTimesRaw.split(',').map((t) => t.trim()).filter(Boolean)
+      : ['08:00', '13:00', '19:00'];
+    const workoutTime = (req.query.workoutTime as string | undefined) ?? null;
+
+    const hasCustomLifestyle = !!(req.query.wakeTime || req.query.sleepTime || req.query.mealTimes || req.query.workoutTime);
+
+    // Build supplement context
+    const supplementList = items
+      .map((i) => {
+        const parts = [`- ${i.name} (${i.type})`];
+        if (i.dosage) parts[0] += `, dosage: ${i.dosage}`;
+        if (i.timing) parts[0] += `, timing hint: ${i.timing}`;
+        return parts[0];
+      })
+      .join('\n');
+
+    // Build profile context
+    const profileParts: string[] = [];
+    if (profile?.body?.age) profileParts.push(`Age: ${profile.body.age}`);
+    if (profile?.body?.sex) profileParts.push(`Sex: ${profile.body.sex}`);
+    if (profile?.diet?.dietType) profileParts.push(`Diet: ${profile.diet.dietType}`);
+    if (profile?.exercise?.intensity) profileParts.push(`Exercise intensity: ${profile.exercise.intensity}`);
+    if (profile?.goals?.primary?.length) profileParts.push(`Health goals: ${profile.goals.primary.join(', ')}`);
+    const profileContext = profileParts.length > 0 ? profileParts.join('\n') : 'Not provided';
+
+    const prompt = `You are an expert nutritionist and supplement timing specialist. Your job is to create an optimised daily supplement schedule based on the user's active supplements and lifestyle.
+
+User lifestyle:
+- Wake time: ${wakeTime}
+- Sleep time: ${sleepTime}
+- Meal times: ${mealTimes.join(', ')}
+${workoutTime ? `- Workout time: ${workoutTime}` : '- No workout scheduled'}
+${hasCustomLifestyle ? '' : '\nNote: No lifestyle params provided — use the times above as sensible defaults.'}
+
+User health profile:
+${profileContext}
+
+Active supplements:
+${supplementList}
+
+Scheduling rules to apply:
+1. Fat-soluble vitamins (A, D, E, K) MUST be taken with a meal containing fat
+2. Calcium and iron should NOT be taken together — separate by at least 2 hours
+3. Magnesium is best taken 30–60 minutes before bed to aid sleep
+4. Vitamin C enhances iron absorption — consider pairing them
+5. B vitamins are best taken in the morning to avoid disrupting sleep
+6. Probiotics are best on an empty stomach (30 min before meals) or with food per product type
+7. Fish oil / omega-3s should be taken with meals to reduce GI upset and improve absorption
+8. Zinc should not be taken with calcium or iron
+9. Caffeine-containing supplements (e.g. green tea extract) should be taken in the morning
+10. Pre-workout supplements should be timed 30 min before workout
+11. If no specific conflicts apply, spread supplements across meals to reduce GI load
+
+Create 3–6 time slots across the day. Each slot should have a specific time (based on the user's lifestyle) and a descriptive label. Assign each supplement to the most appropriate slot with a plain-English reason.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "schedule": [
+    {
+      "time": string,
+      "label": string,
+      "supplements": [
+        {
+          "id": string,
+          "name": string,
+          "dosage": string | null,
+          "reason": string
+        }
+      ]
+    }
+  ],
+  "optimizationNotes": string
+}
+
+Rules:
+- "id" must be exactly the supplement id provided below
+- "time" must be in HH:MM 24-hour format
+- "label" should be descriptive, e.g. "Morning (with breakfast)", "Before bed"
+- "reason" should be 1 sentence explaining WHY this timing — mention conflicts, absorption, food requirements
+- "optimizationNotes" is a 2-3 sentence summary of the key timing decisions, especially any conflicts resolved
+- Every active supplement must appear in exactly one slot
+- Sort slots chronologically by time
+- This is general information, not personalised medical advice
+
+Supplement IDs for reference:
+${items.map((i) => `- id: ${(i._id as Types.ObjectId).toString()} | name: ${i.name}`).join('\n')}`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=schedule-optimizer`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    type OptimizedSupplement = {
+      id: string;
+      name: string;
+      dosage: string | null;
+      reason: string;
+    };
+
+    type OptimizedSlot = {
+      time: string;
+      label: string;
+      supplements: OptimizedSupplement[];
+    };
+
+    type OptimizedSchedule = {
+      schedule: OptimizedSlot[];
+      optimizationNotes: string;
+    };
+
+    let parsed: OptimizedSchedule;
+    try {
+      parsed = JSON.parse(cleaned) as OptimizedSchedule;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    // Validate every item is accounted for — if any are missing, note it
+    const scheduledIds = new Set(
+      parsed.schedule.flatMap((slot) => slot.supplements.map((s) => s.id))
+    );
+    const missingItems = items.filter((i) => !scheduledIds.has((i._id as Types.ObjectId).toString()));
+    if (missingItems.length > 0) {
+      const missingNames = missingItems.map((i) => i.name).join(', ');
+      parsed.optimizationNotes += ` Note: ${missingNames} could not be scheduled — please review their timing manually.`;
+    }
+
+    res.json({
+      success: true,
+      error: null,
+      data: parsed,
+    });
+  } catch (err) {
+    console.error('[GET /cabinet/schedule/optimized]', err);
+    res.status(500).json({ success: false, data: null, error: 'Schedule optimization failed' });
+  }
+});
+
 // GET /cabinet/schedule — group active items by time-of-day slot
 router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> => {
   const ownerId = new Types.ObjectId(req.userId);
