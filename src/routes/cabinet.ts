@@ -6,6 +6,7 @@ import { AuthRequest } from '../middleware/auth';
 import { CabinetItem, CabinetItemType } from '../models/CabinetItem';
 import { SharedStack } from '../models/SharedStack';
 import { FamilyMember } from '../models/FamilyMember';
+import { SideEffect } from '../models/SideEffect';
 import { MODELS } from '../config/models';
 
 async function resolveScopedUserId(
@@ -370,6 +371,145 @@ Do NOT include markdown fences. Return only the JSON array.`;
   } catch (err) {
     console.error('[GET /cabinet/deal-finder]', err);
     res.status(500).json({ success: false, data: null, error: 'Deal finder failed' });
+  }
+});
+
+// GET /cabinet/reaction-insights — AI-powered pattern analysis of side effect logs
+router.get('/reaction-insights', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = new Types.ObjectId(req.userId);
+
+  const logs = await SideEffect.find({ userId }).lean();
+
+  if (logs.length === 0) {
+    res.json({
+      success: true,
+      data: {
+        insights: [],
+        generatedAt: new Date().toISOString(),
+        message: 'Log more reactions to unlock pattern insights.',
+      },
+      error: null,
+    });
+    return;
+  }
+
+  // Group by supplementName + symptom (normalised to lowercase)
+  type GroupKey = string; // `${cabinetItemId}::${symptom_lower}`
+  const groups = new Map<GroupKey, {
+    cabinetItemId: string;
+    symptom: string;
+    dates: string[];
+    ratings: number[];
+  }>();
+
+  // Resolve cabinetItemId → name using current cabinet items
+  const itemIds = [...new Set(logs.map((l) => l.cabinetItemId.toString()))];
+  const cabinetItems = await CabinetItem.find({ _id: { $in: itemIds } }).lean();
+  const itemNameMap = new Map(cabinetItems.map((i) => [(i._id as Types.ObjectId).toString(), i.name]));
+
+  for (const log of logs) {
+    const itemId = log.cabinetItemId.toString();
+    const symptomLower = log.symptom.toLowerCase().trim();
+    const key: GroupKey = `${itemId}::${symptomLower}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, { cabinetItemId: itemId, symptom: log.symptom, dates: [], ratings: [] });
+    }
+    const g = groups.get(key)!;
+    g.dates.push(new Date(log.date).toISOString().slice(0, 10));
+    g.ratings.push(log.rating);
+  }
+
+  // Only include groups with 2+ occurrences
+  const qualifying = [...groups.values()].filter((g) => g.dates.length >= 2);
+
+  if (qualifying.length === 0) {
+    res.json({
+      success: true,
+      data: {
+        insights: [],
+        generatedAt: new Date().toISOString(),
+        message: 'Log more reactions to unlock pattern insights.',
+      },
+      error: null,
+    });
+    return;
+  }
+
+  const patternList = qualifying.map((g) => {
+    const name = itemNameMap.get(g.cabinetItemId) ?? 'Unknown supplement';
+    const avgRating = (g.ratings.reduce((a, b) => a + b, 0) / g.ratings.length).toFixed(1);
+    return `- Supplement: ${name} | Symptom: ${g.symptom} | Occurrences: ${g.dates.length} | Avg severity: ${avgRating}/5 | Dates: ${g.dates.join(', ')}`;
+  }).join('\n');
+
+  const prompt = `You are a health advisor analysing supplement reaction logs. For each pattern below, generate a plain-language insight and actionable recommendation. Be empathetic and practical. Do NOT give medical diagnoses. Always suggest consulting a healthcare provider for major concerns.
+
+Patterns (2+ occurrences of same symptom with same supplement):
+${patternList}
+
+Return ONLY valid JSON array. Each object:
+{
+  "supplementName": string,
+  "symptom": string,
+  "occurrences": number,
+  "insight": string,        // 1 sentence describing the pattern
+  "recommendation": string, // 1-2 sentences of actionable advice
+  "severity": "mild" | "moderate" | "major"
+}
+
+Do NOT include markdown fences. Return only the JSON array.`;
+
+  try {
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=reaction-insights`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let aiInsights: Array<{
+      supplementName: string;
+      symptom: string;
+      occurrences: number;
+      insight: string;
+      recommendation: string;
+      severity: 'mild' | 'moderate' | 'major';
+    }>;
+    try {
+      aiInsights = JSON.parse(cleaned) as typeof aiInsights;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    // Enrich with loggedDates from the original groups
+    const insights = aiInsights.map((ai) => {
+      const match = qualifying.find(
+        (g) =>
+          (itemNameMap.get(g.cabinetItemId) ?? '').toLowerCase() === ai.supplementName.toLowerCase() &&
+          g.symptom.toLowerCase() === ai.symptom.toLowerCase()
+      );
+      return {
+        ...ai,
+        loggedDates: match?.dates ?? [],
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        insights,
+        generatedAt: new Date().toISOString(),
+      },
+      error: null,
+    });
+  } catch (err) {
+    console.error('[GET /cabinet/reaction-insights]', err);
+    res.status(500).json({ success: false, data: null, error: 'Reaction insights failed' });
   }
 });
 
