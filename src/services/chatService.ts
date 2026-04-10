@@ -4,6 +4,7 @@ import { HealthProfile, IHealthProfile } from '../models/HealthProfile';
 import { CabinetItem, ICabinetItem } from '../models/CabinetItem';
 import { Conversation } from '../models/Conversation';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
+import { MODELS } from '../config/models';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -188,10 +189,14 @@ Extract these fields if mentioned (use null for anything not mentioned):
 Only include fields explicitly stated. Return null if nothing to extract.`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-opus-4-5',
+    model: MODELS.EXTRACTION,
     max_tokens: 1024,
     messages: [{ role: 'user', content: extractionPrompt }],
   });
+
+  console.log(
+    `[AI] model=${MODELS.EXTRACTION} input_tokens=${response.usage.input_tokens} output_tokens=${response.usage.output_tokens} task=extraction`
+  );
 
   const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
 
@@ -327,11 +332,15 @@ export async function processChat(
   const systemPrompt = buildSystemPrompt(profile, cabinetItems, language);
 
   const chatResponse = await anthropic.messages.create({
-    model: 'claude-opus-4-5',
+    model: MODELS.CHAT,
     max_tokens: 2048,
     system: systemPrompt,
     messages: historyForClaude,
   });
+
+  console.log(
+    `[AI] model=${MODELS.CHAT} input_tokens=${chatResponse.usage.input_tokens} output_tokens=${chatResponse.usage.output_tokens} task=chat`
+  );
 
   const assistantContent =
     chatResponse.content[0].type === 'text' ? chatResponse.content[0].text : '';

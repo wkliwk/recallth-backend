@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { ICabinetItem } from '../models/CabinetItem';
+import { MODELS } from '../config/models';
 
 export interface Interaction {
   item1: string;
@@ -22,6 +23,32 @@ interface ClaudeInteractionResponse {
 }
 
 const VALID_SEVERITIES = new Set<string>(['minor', 'moderate', 'major']);
+
+// --- In-memory cache for interaction results ---
+interface CacheEntry {
+  result: Interaction[];
+  expiresAt: number;
+}
+
+const interactionCache = new Map<string, CacheEntry>();
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function getCacheKey(itemNames: string[]): string {
+  return itemNames.sort().join('|').toLowerCase();
+}
+
+/**
+ * Invalidate cache entries that contain the given item name.
+ * Call this whenever a cabinet item is added, updated, or removed.
+ */
+export function invalidateInteractionCache(itemName: string): void {
+  const normalised = itemName.toLowerCase();
+  for (const key of interactionCache.keys()) {
+    if (key.split('|').includes(normalised)) {
+      interactionCache.delete(key);
+    }
+  }
+}
 
 function buildItemList(items: ICabinetItem[]): string {
   return items
@@ -100,16 +127,25 @@ function parseClaudeResponse(content: string): Interaction[] {
     }));
 }
 
-async function runInteractionCheck(prompt: string): Promise<Interaction[]> {
+async function runInteractionCheck(items: ICabinetItem[], prompt: string): Promise<Interaction[]> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY is not set');
   }
 
+  // Check cache before making API call
+  const cacheKey = getCacheKey(items.map((i) => i.name));
+  const now = Date.now();
+  const cached = interactionCache.get(cacheKey);
+  if (cached && now < cached.expiresAt) {
+    console.log(`[AI] model=${MODELS.INTERACTION} task=interaction cache_hit=true key="${cacheKey}"`);
+    return cached.result;
+  }
+
   const client = new Anthropic({ apiKey });
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5',
+    model: MODELS.INTERACTION,
     max_tokens: 2048,
     messages: [
       {
@@ -119,12 +155,21 @@ async function runInteractionCheck(prompt: string): Promise<Interaction[]> {
     ],
   });
 
+  console.log(
+    `[AI] model=${MODELS.INTERACTION} input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens} task=interaction cache_hit=false`
+  );
+
   const block = message.content[0];
   if (!block || block.type !== 'text') {
     throw new Error('Unexpected response format from Claude API');
   }
 
-  return parseClaudeResponse(block.text);
+  const result = parseClaudeResponse(block.text);
+
+  // Store in cache with TTL
+  interactionCache.set(cacheKey, { result, expiresAt: now + CACHE_TTL_MS });
+
+  return result;
 }
 
 /**
@@ -143,7 +188,7 @@ export async function checkCabinetInteractions(items: ICabinetItem[]): Promise<I
     return [];
   }
   const prompt = buildPrompt(items);
-  return runInteractionCheck(prompt);
+  return runInteractionCheck(items, prompt);
 }
 
 /**
@@ -164,5 +209,5 @@ export async function checkNewItemInteractions(
   // Build a focused list: new item + existing items
   const allItems = [newItem, ...existingItems];
   const prompt = buildPrompt(allItems);
-  return runInteractionCheck(prompt);
+  return runInteractionCheck(allItems, prompt);
 }
