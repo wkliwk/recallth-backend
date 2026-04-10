@@ -3,6 +3,13 @@ import mongoose, { Document, Schema, Types } from 'mongoose';
 export type CabinetItemType = 'supplement' | 'medication' | 'vitamin';
 export type CabinetItemSource = 'user_input' | 'ai_extracted';
 
+export interface IResearchNotes {
+  summary: string;
+  commonDosage: string;
+  cautions: string;
+  generatedAt: Date;
+}
+
 export interface ICabinetItem extends Document {
   userId: Types.ObjectId;
   name: string;
@@ -18,6 +25,7 @@ export interface ICabinetItem extends Document {
   source: CabinetItemSource;
   price?: number;
   currency?: string;
+  researchNotes?: IResearchNotes;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -84,6 +92,18 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
       type: String,
       trim: true,
       default: 'HKD',
+    },
+    researchNotes: {
+      type: new Schema(
+        {
+          summary: { type: String, required: true },
+          commonDosage: { type: String, required: true },
+          cautions: { type: String, required: true },
+          generatedAt: { type: Date, required: true },
+        },
+        { _id: false }
+      ),
+      default: undefined,
     },
   },
   { timestamps: true }
