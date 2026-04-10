@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { Types } from 'mongoose';
 import { HealthProfile, IHealthProfile } from '../models/HealthProfile';
 import { CabinetItem, ICabinetItem } from '../models/CabinetItem';
+import { ExtractionReview } from '../models/ExtractionReview';
 import { Conversation } from '../models/Conversation';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
@@ -220,6 +221,10 @@ async function applyExtractedData(
 ): Promise<void> {
   // Build dot-notation $set for profile fields
   const profileSet: Record<string, unknown> = { source: 'ai_extracted' };
+  const profileReviews: Array<{
+    field: string;
+    extractedValue: unknown;
+  }> = [];
 
   const profileCategories: Array<keyof Omit<ExtractionResult, 'cabinetItems'>> = [
     'body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals',
@@ -231,7 +236,9 @@ async function applyExtractedData(
 
     for (const [field, value] of Object.entries(categoryData)) {
       if (value !== null && value !== undefined) {
-        profileSet[`${category}.${field}`] = value;
+        const dotField = `${category}.${field}`;
+        profileSet[dotField] = value;
+        profileReviews.push({ field: dotField, extractedValue: value });
       }
     }
   }
@@ -242,13 +249,25 @@ async function applyExtractedData(
       { $set: profileSet },
       { upsert: true, new: true }
     );
+
+    // Create ExtractionReview records for profile fields
+    for (const review of profileReviews) {
+      await ExtractionReview.create({
+        userId,
+        source: 'profile',
+        field: review.field,
+        extractedValue: review.extractedValue,
+        status: 'pending',
+        extractedAt: new Date(),
+      });
+    }
   }
 
   // Create cabinet items for any new supplements mentioned
   if (extracted.cabinetItems && extracted.cabinetItems.length > 0) {
     for (const item of extracted.cabinetItems) {
       if (item.name) {
-        await CabinetItem.create({
+        const cabinetItem = await CabinetItem.create({
           userId,
           name: item.name,
           dosage: item.dosage ?? undefined,
@@ -258,6 +277,23 @@ async function applyExtractedData(
           source: 'ai_extracted',
           active: true,
         });
+
+        // Create ExtractionReview records for cabinet item fields
+        const cabinetFields = ['dosage', 'frequency', 'timing', 'brand'];
+        for (const field of cabinetFields) {
+          const value = (item as Record<string, unknown>)[field];
+          if (value !== null && value !== undefined) {
+            await ExtractionReview.create({
+              userId,
+              source: 'cabinet',
+              sourceId: cabinetItem._id,
+              field,
+              extractedValue: value,
+              status: 'pending',
+              extractedAt: new Date(),
+            });
+          }
+        }
       }
     }
   }
