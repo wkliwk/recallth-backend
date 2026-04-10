@@ -7,7 +7,7 @@ const router = Router();
 
 // POST /cabinet — add item
 router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
-  const { name, type, dosage, frequency, timing, brand, notes, active, startDate, endDate, source } = req.body;
+  const { name, type, dosage, frequency, timing, brand, notes, active, startDate, endDate, source, price, currency } = req.body;
 
   if (!name || typeof name !== 'string' || name.trim() === '') {
     res.status(400).json({ success: false, data: null, error: 'name is required' });
@@ -33,6 +33,8 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     startDate: startDate ? new Date(startDate) : new Date(),
     endDate: endDate ? new Date(endDate) : undefined,
     source: source || 'user_input',
+    price: price !== undefined ? Number(price) : undefined,
+    currency: currency || 'HKD',
   });
 
   res.status(201).json({
@@ -96,7 +98,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
@@ -175,6 +177,24 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
       error: null,
     });
   }
+});
+
+// GET /cabinet/budget-summary — monthly spend summary
+router.get('/budget-summary', async (req: AuthRequest, res: Response): Promise<void> => {
+  const items = await CabinetItem.find({ userId: req.userId, active: true, price: { $exists: true, $ne: null } }).lean();
+
+  const priced = items.filter((i) => i.price !== undefined && i.price !== null);
+  const totalMonthly = priced.reduce((sum, i) => sum + (i.price ?? 0), 0);
+
+  res.json({
+    success: true,
+    error: null,
+    data: {
+      totalMonthly,
+      currency: priced[0]?.currency ?? 'HKD',
+      items: priced.map((i) => ({ name: i.name, price: i.price, currency: i.currency ?? 'HKD' })),
+    },
+  });
 });
 
 export default router;

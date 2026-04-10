@@ -16,6 +16,8 @@ export interface ICabinetItem extends Document {
   startDate: Date;
   endDate?: Date;
   source: CabinetItemSource;
+  price?: number;
+  currency?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -73,6 +75,15 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
       type: String,
       enum: ['user_input', 'ai_extracted'],
       default: 'user_input',
+    },
+    price: {
+      type: Number,
+      min: 0,
+    },
+    currency: {
+      type: String,
+      trim: true,
+      default: 'HKD',
     },
   },
   { timestamps: true }
