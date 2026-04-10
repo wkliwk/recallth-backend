@@ -5,6 +5,7 @@ import { connectDB } from './utils/db';
 import { errorHandler } from './middleware/errorHandler';
 import healthRouter from './routes/health';
 import authRouter from './routes/auth';
+import authGoogleRouter from './routes/authGoogle';
 
 dotenv.config();
 
@@ -17,6 +18,7 @@ app.use(express.json());
 // Routes
 app.use('/health', healthRouter);
 app.use('/auth', authRouter);
+app.use('/auth', authGoogleRouter);
 
 // Error handling
 app.use(errorHandler);

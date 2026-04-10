@@ -54,6 +54,10 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  if (!user.passwordHash) {
+    res.status(401).json({ success: false, data: null, error: 'This account uses Google Sign-In. Please use "Continue with Google".' });
+    return;
+  }
   const valid = await bcrypt.compare(password, user.passwordHash);
   if (!valid) {
     res.status(401).json({ success: false, data: null, error: 'Invalid credentials' });
