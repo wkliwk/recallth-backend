@@ -105,6 +105,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
         sleep: {},
         lifestyle: {},
         goals: {},
+        bloodwork: {},
         changeHistory: [],
       },
       error: null,
