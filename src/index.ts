@@ -11,6 +11,7 @@ import cabinetRouter from './routes/cabinet';
 import chatRouter from './routes/chat';
 import interactionsRouter from './routes/interactions';
 import historyRouter from './routes/history';
+import extractionReviewRouter from './routes/extractionReview';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -26,6 +27,7 @@ app.use('/health', healthRouter);
 app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
+app.use('/profile/auto-extracted', authenticate, extractionReviewRouter);
 app.use('/cabinet', authenticate, cabinetRouter);
 app.use('/cabinet/interactions', authenticate, interactionsRouter);
 app.use('/chat', authenticate, chatRouter);
