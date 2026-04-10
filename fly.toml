@@ -1,5 +1,5 @@
 app = "recallth-backend"
-primary_region = "hkg"
+primary_region = "sin"
 
 [build]
 
