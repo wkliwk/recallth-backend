@@ -7,6 +7,7 @@ import { CabinetItem, CabinetItemType } from '../models/CabinetItem';
 import { SharedStack } from '../models/SharedStack';
 import { FamilyMember } from '../models/FamilyMember';
 import { SideEffect } from '../models/SideEffect';
+import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
 
 async function resolveScopedUserId(
@@ -651,6 +652,217 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
       totalActive: items.length,
     },
   });
+});
+
+// POST /cabinet/stack-builder — AI-recommended supplement stack from health goals
+router.post('/stack-builder', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = new Types.ObjectId(req.userId);
+    const scopedUserId = await resolveScopedUserId(userId, req.query.memberId as string | undefined);
+    if (!scopedUserId) {
+      res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+      return;
+    }
+
+    const [profile, cabinetItems] = await Promise.all([
+      HealthProfile.findOne({ userId: scopedUserId }).lean(),
+      CabinetItem.find({ userId: scopedUserId, active: true }).lean(),
+    ]);
+
+    const overrideGoals = req.body?.goals as string[] | undefined;
+    const profileGoals = profile?.goals?.primary ?? [];
+    const goalsToUse = overrideGoals && overrideGoals.length > 0 ? overrideGoals : profileGoals;
+
+    const cabinetList = cabinetItems.map((i) => `${i.name} (${i.type}${i.dosage ? `, ${i.dosage}` : ''})`).join(', ') || 'None';
+
+    const profileContext = [
+      profile?.body?.age ? `Age: ${profile.body.age}` : null,
+      profile?.body?.sex ? `Sex: ${profile.body.sex}` : null,
+      profile?.body?.weight ? `Weight: ${profile.body.weight}kg` : null,
+      profile?.exercise?.intensity ? `Exercise intensity: ${profile.exercise.intensity}` : null,
+      profile?.diet?.dietType ? `Diet: ${profile.diet.dietType}` : null,
+      profile?.diet?.allergies?.length ? `Allergies: ${profile.diet.allergies.join(', ')}` : null,
+      profile?.lifestyle?.stressLevel ? `Stress level: ${profile.lifestyle.stressLevel}` : null,
+      profile?.sleep?.quality ? `Sleep quality: ${profile.sleep.quality}` : null,
+    ].filter(Boolean).join('\n') || 'Not provided';
+
+    const prompt = `You are an evidence-based health advisor. Based on the user's profile and health goals, recommend a personalised supplement stack.
+
+User profile:
+${profileContext}
+
+Health goals: ${goalsToUse.length > 0 ? goalsToUse.join(', ') : 'Not specified'}
+
+Current active supplements: ${cabinetList}
+
+Recommend the top 6-8 most relevant supplements for this user. For each, specify whether they already have it.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "recommended": [
+    {
+      "name": string,
+      "reason": string,
+      "alreadyInCabinet": boolean,
+      "priority": "essential" | "beneficial" | "optional",
+      "suggestedDosage": string,
+      "timing": string
+    }
+  ],
+  "interactionWarnings": string[],
+  "notesOnCurrentStack": string
+}
+
+Rules:
+- Base recommendations on evidence-based research
+- Mark alreadyInCabinet: true if the supplement name matches any in the current cabinet (case-insensitive)
+- interactionWarnings: mention any notable interactions between recommended additions and the current stack
+- notesOnCurrentStack: 1-2 sentence qualitative summary of the user's existing supplements
+- This is general information, not personalised medical advice`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=stack-builder`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    type RecommendedItem = {
+      name: string;
+      reason: string;
+      alreadyInCabinet: boolean;
+      priority: 'essential' | 'beneficial' | 'optional';
+      suggestedDosage: string;
+      timing: string;
+    };
+
+    let parsed: { recommended: RecommendedItem[]; interactionWarnings: string[]; notesOnCurrentStack: string };
+    try {
+      parsed = JSON.parse(cleaned) as typeof parsed;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    // Ensure alreadyInCabinet flags are accurate based on actual cabinet
+    const cabinetNames = cabinetItems.map((i) => i.name.toLowerCase());
+    parsed.recommended = parsed.recommended.map((r) => ({
+      ...r,
+      alreadyInCabinet: cabinetNames.some((n) => n === r.name.toLowerCase()),
+    }));
+
+    res.json({ success: true, data: parsed });
+  } catch (err) {
+    console.error('[POST /cabinet/stack-builder]', err);
+    res.status(500).json({ success: false, data: null, error: 'Stack builder failed' });
+  }
+});
+
+// GET /cabinet/seasonal-recommendations — AI seasonal supplement suggestions
+router.get('/seasonal-recommendations', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = new Types.ObjectId(req.userId);
+    const scopedUserId = await resolveScopedUserId(userId, req.query.memberId as string | undefined);
+    if (!scopedUserId) {
+      res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+      return;
+    }
+
+    const hemisphere = (req.query.hemisphere as string) === 'southern' ? 'southern' : 'northern';
+
+    const [profile, cabinetItems] = await Promise.all([
+      HealthProfile.findOne({ userId: scopedUserId }).lean(),
+      CabinetItem.find({ userId: scopedUserId, active: true }).lean(),
+    ]);
+
+    const now = new Date();
+    const month = now.getMonth() + 1; // 1-12
+
+    function getSeason(m: number, hemi: string): string {
+      const isNorthern = hemi === 'northern';
+      if (m >= 3 && m <= 5) return isNorthern ? 'Spring' : 'Autumn';
+      if (m >= 6 && m <= 8) return isNorthern ? 'Summer' : 'Winter';
+      if (m >= 9 && m <= 11) return isNorthern ? 'Autumn' : 'Spring';
+      return isNorthern ? 'Winter' : 'Summer';
+    }
+
+    const season = getSeason(month, hemisphere);
+    const seasonLabel = `${season} (${hemisphere === 'northern' ? 'Northern' : 'Southern'} Hemisphere)`;
+
+    const cabinetList = cabinetItems.map((i) => i.name).join(', ') || 'None';
+    const goals = profile?.goals?.primary?.join(', ') || 'Not specified';
+
+    const prompt = `You are a health advisor. Today is ${now.toISOString().slice(0, 10)}, currently ${seasonLabel}.
+
+Based on the season and the user's context, recommend 4-6 supplements that are especially relevant right now.
+
+User health goals: ${goals}
+Current supplements: ${cabinetList}
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "season": "${seasonLabel}",
+  "rationale": string,
+  "recommendations": [
+    {
+      "name": string,
+      "reason": string,
+      "alreadyInCabinet": boolean,
+      "priority": "high" | "medium" | "low"
+    }
+  ],
+  "currentCabinetNotes": string
+}
+
+Rules:
+- rationale: 1-2 sentences on why this season matters for supplementation
+- Mark alreadyInCabinet: true if the name matches a supplement in the current cabinet (case-insensitive)
+- currentCabinetNotes: 1-2 sentences on how their current stack aligns with seasonal needs
+- Provide evidence-based, practical recommendations
+- This is general information, not personalised medical advice`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=seasonal-recommendations`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    type SeasonalRec = {
+      name: string;
+      reason: string;
+      alreadyInCabinet: boolean;
+      priority: 'high' | 'medium' | 'low';
+    };
+
+    let parsed: { season: string; rationale: string; recommendations: SeasonalRec[]; currentCabinetNotes: string };
+    try {
+      parsed = JSON.parse(cleaned) as typeof parsed;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    // Correct alreadyInCabinet based on actual cabinet
+    const cabinetNames = cabinetItems.map((i) => i.name.toLowerCase());
+    parsed.recommendations = parsed.recommendations.map((r) => ({
+      ...r,
+      alreadyInCabinet: cabinetNames.some((n) => n === r.name.toLowerCase()),
+    }));
+
+    res.json({ success: true, data: parsed });
+  } catch (err) {
+    console.error('[GET /cabinet/seasonal-recommendations]', err);
+    res.status(500).json({ success: false, data: null, error: 'Seasonal recommendations failed' });
+  }
 });
 
 export default router;
