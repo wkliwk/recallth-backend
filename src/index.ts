@@ -13,6 +13,7 @@ import interactionsRouter from './routes/interactions';
 import historyRouter from './routes/history';
 import extractionReviewRouter from './routes/extractionReview';
 import familyMembersRouter from './routes/familyMembers';
+import wellnessRouter from './routes/wellness';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -34,6 +35,7 @@ app.use('/cabinet/interactions', authenticate, interactionsRouter);
 app.use('/chat', authenticate, chatRouter);
 app.use('/history', authenticate, historyRouter);
 app.use('/family-members', familyMembersRouter);
+app.use('/wellness', authenticate, wellnessRouter);
 
 // Error handling
 app.use(errorHandler);
