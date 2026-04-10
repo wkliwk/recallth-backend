@@ -28,6 +28,52 @@ const getGenAI = () => {
 
 const router = Router();
 
+// ─── Research notes helper ────────────────────────────────────────────────────
+
+async function generateResearchNotes(itemId: string, name: string, type: string): Promise<void> {
+  try {
+    const prompt = `You are a evidence-based health advisor. Provide a concise research summary for the supplement or medication below.
+
+Name: ${name}
+Type: ${type}
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "summary": string,       // 2-3 sentences: what it does, key benefits
+  "commonDosage": string,  // e.g. "500–1000mg daily with meals"
+  "cautions": string       // e.g. "Avoid if on blood thinners. Consult a doctor if pregnant."
+}
+
+Important: Include a note that this is general information, not personalised medical advice.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    const parsed = JSON.parse(cleaned) as {
+      summary: string;
+      commonDosage: string;
+      cautions: string;
+    };
+
+    await CabinetItem.findByIdAndUpdate(itemId, {
+      researchNotes: {
+        summary: parsed.summary,
+        commonDosage: parsed.commonDosage,
+        cautions: parsed.cautions,
+        generatedAt: new Date(),
+      },
+    });
+
+    console.log(`[AI] research notes generated for item ${itemId} (${name})`);
+  } catch (err) {
+    // Non-fatal — item creation is not affected
+    console.error(`[AI] research notes generation failed for ${name}:`, err);
+  }
+}
+
 // POST /cabinet — add item
 router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   const ownerId = new Types.ObjectId(req.userId);
@@ -72,6 +118,9 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     data: { ...item.toObject(), interactions: [] },
     error: null,
   });
+
+  // Fire-and-forget research notes generation (non-blocking)
+  void generateResearchNotes((item._id as Types.ObjectId).toString(), item.name, item.type);
 });
 
 // GET /cabinet — list user's items with optional filters
@@ -162,6 +211,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     }
   }
 
+  const nameChanged = updates.name !== undefined && updates.name !== item.name;
   const updated = await CabinetItem.findByIdAndUpdate(id, { $set: updates }, { new: true, runValidators: true });
 
   res.json({
@@ -169,6 +219,37 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     data: { ...updated!.toObject(), interactions: [] },
     error: null,
   });
+
+  // Regenerate research notes if name changed (fire-and-forget)
+  if (nameChanged) {
+    void generateResearchNotes(id, updated!.name, updated!.type);
+  }
+});
+
+// POST /cabinet/:id/refresh-research — manually trigger research notes regeneration
+router.post('/:id/refresh-research', async (req: AuthRequest, res: Response): Promise<void> => {
+  const id = req.params['id'] as string;
+
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(400).json({ success: false, data: null, error: 'Invalid item id' });
+    return;
+  }
+
+  const item = await CabinetItem.findById(id);
+  if (!item) {
+    res.status(404).json({ success: false, data: null, error: 'Item not found' });
+    return;
+  }
+
+  if (item.userId.toString() !== req.userId) {
+    res.status(403).json({ success: false, data: null, error: 'Forbidden' });
+    return;
+  }
+
+  res.status(202).json({ success: true, data: { message: 'Research notes regeneration queued.' }, error: null });
+
+  // Fire-and-forget
+  void generateResearchNotes(id, item.name, item.type);
 });
 
 // DELETE /cabinet/:id — soft delete (set active=false + endDate=now)
