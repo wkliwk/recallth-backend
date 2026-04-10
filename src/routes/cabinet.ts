@@ -1141,4 +1141,81 @@ This is general information, not personalised medical advice.`;
   }
 });
 
+// POST /cabinet/doctor-questions — AI-suggested questions to ask a doctor
+router.post('/doctor-questions', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const userObjectId = new Types.ObjectId(userId);
+
+    const [profile, cabinetItems] = await Promise.all([
+      HealthProfile.findOne({ userId: userObjectId }).lean(),
+      CabinetItem.find({ userId: userObjectId, active: true }).lean(),
+    ]);
+
+    const supplementList = cabinetItems.length > 0
+      ? cabinetItems.map((i) => {
+          const parts = [i.name];
+          if (i.dosage) parts.push(`dosage: ${i.dosage}`);
+          if (i.frequency) parts.push(`frequency: ${i.frequency}`);
+          return `- ${parts.join(', ')}`;
+        }).join('\n')
+      : 'No active supplements or medications.';
+
+    const goals = profile?.goals?.primary?.join(', ') || 'Not specified';
+    const allergies = profile?.diet?.allergies?.join(', ') || 'None reported';
+    const conditions = profile?.diet?.intolerances?.join(', ') || 'None reported';
+
+    const prompt = `You are an evidence-based health advisor helping a user prepare for a doctor visit.
+
+The user is currently taking the following supplements and medications:
+${supplementList}
+
+Health goals: ${goals}
+Allergies: ${allergies}
+Known conditions / intolerances: ${conditions}
+
+Based on this information, generate 3–5 specific, evidence-based questions the user should ask their doctor. Focus on:
+- Potential interactions between their supplements/medications
+- Whether dosages are appropriate for their goals
+- Safety concerns based on known conditions or allergies
+- Evidence gaps or areas where medical guidance is especially important
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "questions": [
+    "<question 1>",
+    "<question 2>",
+    "<question 3>"
+  ]
+}
+
+This is general health information, not personalised medical advice.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=doctor-questions`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let parsed: { questions: string[] };
+    try {
+      parsed = JSON.parse(cleaned) as { questions: string[] };
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    res.json({ success: true, data: { questions: parsed.questions } });
+  } catch (err) {
+    console.error('[POST /cabinet/doctor-questions]', err);
+    res.status(500).json({ success: false, data: null, error: 'Doctor questions failed' });
+  }
+});
+
 export default router;
