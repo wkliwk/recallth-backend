@@ -1,5 +1,5 @@
 export const MODELS = {
-  CHAT: 'gemini-2.0-flash',
-  EXTRACTION: 'gemini-2.0-flash',
-  INTERACTION: 'gemini-2.0-flash',
+  CHAT: 'gemini-1.5-flash',
+  EXTRACTION: 'gemini-1.5-flash',
+  INTERACTION: 'gemini-1.5-flash',
 } as const;
