@@ -1,9 +1,18 @@
 import { Router, Response } from 'express';
 import { Types } from 'mongoose';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { Conversation } from '../models/Conversation';
 import { HealthProfile } from '../models/HealthProfile';
 import { CabinetChangeLog } from '../models/CabinetChangeLog';
+import { CabinetItem } from '../models/CabinetItem';
+import { MODELS } from '../config/models';
+
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 const historyRouter = Router();
 
@@ -329,6 +338,76 @@ historyRouter.get('/timeline', async (req: AuthRequest, res: Response): Promise<
   } catch (err) {
     console.error('[GET /history/timeline]', err);
     res.status(500).json({ success: false, error: 'Internal server error', data: null });
+  }
+});
+
+// POST /history/weekly-digest — AI-generated weekly health summary
+historyRouter.post('/weekly-digest', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    // Compute week range (Monday – Sunday)
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0 = Sunday
+    const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - daysToMonday);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // Load data in parallel
+    const [items, profile] = await Promise.all([
+      CabinetItem.find({ userId, active: true }).lean(),
+      HealthProfile.findOne({ userId }).lean(),
+    ]);
+
+    const supplementList = items.map((i) => `${i.name}${i.dosage ? ` (${i.dosage})` : ''}${i.frequency ? `, ${i.frequency}` : ''}`).join('\n');
+    const goals = (profile as { goals?: { primaryGoal?: string } } | null)?.goals?.primaryGoal ?? 'general wellness';
+
+    const prompt = `You are a supportive health advisor writing a brief weekly digest for a user.
+
+The user is currently taking these supplements:
+${supplementList || 'None tracked yet.'}
+
+Their primary health goal: ${goals}
+
+Write a weekly health digest for the week of ${weekStart.toISOString().slice(0, 10)} to ${weekEnd.toISOString().slice(0, 10)}.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "summary": string,    // 2-3 sentences: encouraging overview of their current supplement routine and how it aligns with their goals
+  "suggestion": string  // 1 specific, actionable suggestion to improve or optimise their health this week
+}
+
+Tone: warm, encouraging, supportive. Not clinical. Not judgmental.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=weekly-digest`
+    );
+
+    let raw = result.response.text().trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
+
+    const parsed = JSON.parse(raw) as { summary: string; suggestion: string };
+
+    res.json({
+      success: true,
+      data: {
+        weekStart: weekStart.toISOString().slice(0, 10),
+        weekEnd: weekEnd.toISOString().slice(0, 10),
+        summary: parsed.summary,
+        suggestion: parsed.suggestion,
+      },
+    });
+  } catch (err) {
+    console.error('[POST /history/weekly-digest]', err);
+    res.status(500).json({ success: false, data: null, error: 'Weekly digest generation failed' });
   }
 });
 
