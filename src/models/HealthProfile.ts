@@ -41,6 +41,20 @@ export interface IGoals {
   primary?: string[];
 }
 
+export interface IBloodwork {
+  hba1c?: number;         // %
+  totalCholesterol?: number; // mmol/L
+  ldl?: number;           // mmol/L
+  hdl?: number;           // mmol/L
+  triglycerides?: number; // mmol/L
+  fastingGlucose?: number; // mmol/L
+  ferritin?: number;      // ng/mL
+  vitaminD?: number;      // nmol/L
+  vitaminB12?: number;    // pmol/L
+  tsh?: number;           // mIU/L
+  testedAt?: string;      // date string e.g. "2026-03-01"
+}
+
 // ─── Change history entry ──────────────────────────────────────────────────
 
 export interface IChangeEntry {
@@ -61,6 +75,7 @@ export interface IHealthProfile extends Document {
   sleep: ISleep;
   lifestyle: ILifestyle;
   goals: IGoals;
+  bloodwork: IBloodwork;
   changeHistory: IChangeEntry[];
   createdAt: Date;
   updatedAt: Date;
@@ -125,6 +140,23 @@ const GoalsSchema = new Schema<IGoals>(
   { _id: false }
 );
 
+const BloodworkSchema = new Schema<IBloodwork>(
+  {
+    hba1c: { type: Number },
+    totalCholesterol: { type: Number },
+    ldl: { type: Number },
+    hdl: { type: Number },
+    triglycerides: { type: Number },
+    fastingGlucose: { type: Number },
+    ferritin: { type: Number },
+    vitaminD: { type: Number },
+    vitaminB12: { type: Number },
+    tsh: { type: Number },
+    testedAt: { type: String },
+  },
+  { _id: false }
+);
+
 const ChangeEntrySchema = new Schema<IChangeEntry>(
   {
     field: { type: String, required: true },
@@ -145,6 +177,7 @@ const HealthProfileSchema = new Schema<IHealthProfile>(
     sleep: { type: SleepSchema, default: () => ({}) },
     lifestyle: { type: LifestyleSchema, default: () => ({}) },
     goals: { type: GoalsSchema, default: () => ({}) },
+    bloodwork: { type: BloodworkSchema, default: () => ({}) },
     changeHistory: { type: [ChangeEntrySchema], default: [] },
   },
   { timestamps: true }

@@ -101,7 +101,7 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
   const userId = new Types.ObjectId(req.userId);
 
   // Only accept recognised top-level category keys
-  const ALLOWED_CATEGORIES = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals'] as const;
+  const ALLOWED_CATEGORIES = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals', 'bloodwork'] as const;
   type Category = typeof ALLOWED_CATEGORIES[number];
 
   const incoming = req.body as Partial<Record<Category, Record<string, unknown>>>;

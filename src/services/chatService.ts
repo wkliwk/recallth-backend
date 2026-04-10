@@ -68,6 +68,7 @@ function buildSystemPrompt(
         sleep: profile.sleep,
         lifestyle: profile.lifestyle,
         goals: profile.goals,
+        bloodwork: profile.bloodwork,
       }
     : null;
 
