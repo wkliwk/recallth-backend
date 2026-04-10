@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Types } from 'mongoose';
 import { HealthProfile, IHealthProfile } from '../models/HealthProfile';
 import { CabinetItem, ICabinetItem } from '../models/CabinetItem';
@@ -7,9 +7,7 @@ import { Conversation } from '../models/Conversation';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
 
 // --- Rate limiting ---
 interface RateLimitEntry {
@@ -187,19 +185,16 @@ Extract these fields if mentioned (use null for anything not mentioned):
   "cabinetItems": [{ "name": null, "dosage": null, "frequency": null, "timing": null, "brand": null }]
 }
 
-Only include fields explicitly stated. Return null if nothing to extract.`;
+Only include fields explicitly stated. Return null if nothing to extract. Respond only with JSON.`;
 
-  const response = await anthropic.messages.create({
-    model: MODELS.EXTRACTION,
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: extractionPrompt }],
-  });
+  const model = genAI.getGenerativeModel({ model: MODELS.EXTRACTION });
+  const result = await model.generateContent(extractionPrompt);
+  const text = result.response.text().trim();
 
+  const usage = result.response.usageMetadata;
   console.log(
-    `[AI] model=${MODELS.EXTRACTION} input_tokens=${response.usage.input_tokens} output_tokens=${response.usage.output_tokens} task=extraction`
+    `[AI] model=${MODELS.EXTRACTION} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=extraction`
   );
-
-  const text = response.content[0].type === 'text' ? response.content[0].text.trim() : '';
 
   if (!text || text === 'null') return null;
 
@@ -358,28 +353,30 @@ export async function processChat(
   const userMsg = { role: 'user' as const, content: userMessage, timestamp: new Date() };
   conversation.messages.push(userMsg);
 
-  // Build message history for Claude (last 20 messages for context window)
-  const historyForClaude = conversation.messages.slice(-20).map((m) => ({
-    role: m.role as 'user' | 'assistant',
-    content: m.content,
+  // Build message history for Gemini (last 20 messages for context window, excluding the latest user message)
+  const allMessages = conversation.messages.slice(-20);
+  // History is all messages except the last user message (which we send via sendMessage)
+  const historyMessages = allMessages.slice(0, -1);
+  const history = historyMessages.map((m) => ({
+    role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
+    parts: [{ text: m.content }],
   }));
 
-  // Call Claude for chat response
+  // Call Gemini for chat response
   const systemPrompt = buildSystemPrompt(profile, cabinetItems, language);
-
-  const chatResponse = await anthropic.messages.create({
+  const model = genAI.getGenerativeModel({
     model: MODELS.CHAT,
-    max_tokens: 2048,
-    system: systemPrompt,
-    messages: historyForClaude,
+    systemInstruction: systemPrompt,
   });
 
-  console.log(
-    `[AI] model=${MODELS.CHAT} input_tokens=${chatResponse.usage.input_tokens} output_tokens=${chatResponse.usage.output_tokens} task=chat`
-  );
+  const chat = model.startChat({ history });
+  const chatResult = await chat.sendMessage(userMessage);
+  const assistantContent = chatResult.response.text();
 
-  const assistantContent =
-    chatResponse.content[0].type === 'text' ? chatResponse.content[0].text : '';
+  const usage = chatResult.response.usageMetadata;
+  console.log(
+    `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=chat`
+  );
 
   const assistantMsg = {
     role: 'assistant' as const,

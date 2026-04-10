@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { ICabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
 
@@ -11,7 +11,7 @@ export interface Interaction {
   citation: string;
 }
 
-interface ClaudeInteractionResponse {
+interface GeminiInteractionResponse {
   interactions: Array<{
     item1: string;
     item2: string;
@@ -91,16 +91,19 @@ Rules:
 - Return ONLY valid JSON, no other text`;
 }
 
-function parseClaudeResponse(content: string): Interaction[] {
-  let parsed: ClaudeInteractionResponse;
+function parseGeminiResponse(content: string): Interaction[] {
+  // Strip markdown code fences if present
+  const cleaned = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+  let parsed: GeminiInteractionResponse;
   try {
-    parsed = JSON.parse(content) as ClaudeInteractionResponse;
+    parsed = JSON.parse(cleaned) as GeminiInteractionResponse;
   } catch {
-    throw new Error(`Claude returned non-JSON response: ${content.slice(0, 200)}`);
+    throw new Error(`Gemini returned non-JSON response: ${content.slice(0, 200)}`);
   }
 
   if (!parsed.interactions || !Array.isArray(parsed.interactions)) {
-    throw new Error('Claude response missing interactions array');
+    throw new Error('Gemini response missing interactions array');
   }
 
   return parsed.interactions
@@ -128,9 +131,9 @@ function parseClaudeResponse(content: string): Interaction[] {
 }
 
 async function runInteractionCheck(items: ICabinetItem[], prompt: string): Promise<Interaction[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is not set');
+    throw new Error('GOOGLE_GEMINI_API_KEY is not set');
   }
 
   // Check cache before making API call
@@ -142,29 +145,18 @@ async function runInteractionCheck(items: ICabinetItem[], prompt: string): Promi
     return cached.result;
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new GoogleGenerativeAI(apiKey);
+  const model = client.getGenerativeModel({ model: MODELS.INTERACTION });
 
-  const message = await client.messages.create({
-    model: MODELS.INTERACTION,
-    max_tokens: 2048,
-    messages: [
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
-  });
+  const response = await model.generateContent(prompt);
+  const text = response.response.text();
 
+  const usage = response.response.usageMetadata;
   console.log(
-    `[AI] model=${MODELS.INTERACTION} input_tokens=${message.usage.input_tokens} output_tokens=${message.usage.output_tokens} task=interaction cache_hit=false`
+    `[AI] model=${MODELS.INTERACTION} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=interaction cache_hit=false`
   );
 
-  const block = message.content[0];
-  if (!block || block.type !== 'text') {
-    throw new Error('Unexpected response format from Claude API');
-  }
-
-  const result = parseClaudeResponse(block.text);
+  const result = parseGeminiResponse(text);
 
   // Store in cache with TTL
   interactionCache.set(cacheKey, { result, expiresAt: now + CACHE_TTL_MS });

@@ -35,9 +35,10 @@ npm run dev
    ```
    fly secrets set MONGODB_URI="your-atlas-connection-string"
    fly secrets set JWT_SECRET="your-jwt-secret-min-32-chars"
-   fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
+   fly secrets set GOOGLE_GEMINI_API_KEY="your-gemini-api-key"
    fly secrets set GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
    ```
+   Get a free Gemini API key at: aistudio.google.com → Get API Key (free tier: 15 RPM, 1M tokens/day)
 5. Deploy: `fly deploy`
 
 ### MongoDB
