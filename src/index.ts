@@ -10,6 +10,7 @@ import profileRouter from './routes/profile';
 import cabinetRouter from './routes/cabinet';
 import chatRouter from './routes/chat';
 import interactionsRouter from './routes/interactions';
+import historyRouter from './routes/history';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -28,6 +29,7 @@ app.use('/profile', profileRouter);
 app.use('/cabinet', authenticate, cabinetRouter);
 app.use('/cabinet/interactions', authenticate, interactionsRouter);
 app.use('/chat', authenticate, chatRouter);
+app.use('/history', authenticate, historyRouter);
 
 // Error handling
 app.use(errorHandler);
