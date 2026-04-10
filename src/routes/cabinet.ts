@@ -1081,4 +1081,64 @@ Rules:
   }
 });
 
+// GET /cabinet/cycle-alerts — AI-recommended cycling alerts for long-running supplements
+router.get('/cycle-alerts', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const items = await CabinetItem.find({ userId, active: true }).lean();
+    if (items.length === 0) {
+      res.json({ success: true, data: { alerts: [] } });
+      return;
+    }
+
+    const now = Date.now();
+    const supplementList = items.map((item) => {
+      const daysTaken = Math.floor((now - new Date(item.createdAt as Date).getTime()) / 86400000);
+      return { id: String(item._id), name: item.name, type: item.type, daysTaken };
+    });
+
+    const prompt = `You are an evidence-based health advisor reviewing a user's supplement and medication history.
+The user has been taking the following for the indicated number of days:
+
+${supplementList.map((s) => `- ${s.name} (${s.type}): ${s.daysTaken} days`).join('\n')}
+
+Identify ONLY the items where cycling off is genuinely recommended based on established evidence (e.g. tolerance build-up, safety limits, typical cycle protocols). Ignore items with no known cycling concerns.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "alerts": [
+    {
+      "id": "<same id as input>",
+      "name": "<supplement name>",
+      "daysTaken": <number>,
+      "recommendation": "<concise action, e.g. 'Consider a 1–2 week break'>",
+      "reason": "<1–2 sentence evidence-based rationale>"
+    }
+  ]
+}
+
+If no items need cycling attention, return { "alerts": [] }.
+This is general information, not personalised medical advice.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=cycle-alerts`
+    );
+
+    let raw = result.response.text().trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
+
+    const parsed = JSON.parse(raw) as { alerts: Array<{ id: string; name: string; daysTaken: number; recommendation: string; reason: string }> };
+
+    res.json({ success: true, data: parsed });
+  } catch (err) {
+    console.error('[GET /cabinet/cycle-alerts]', err);
+    res.status(500).json({ success: false, data: null, error: 'Cycle alerts failed' });
+  }
+});
+
 export default router;
