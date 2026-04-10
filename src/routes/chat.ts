@@ -87,6 +87,7 @@ chatRouter.get('/history', async (req: AuthRequest, res: Response): Promise<void
       $project: {
         _id: 1,
         title: 1,
+        summary: 1,
         createdAt: 1,
         messageCount: { $size: '$messages' },
       },
