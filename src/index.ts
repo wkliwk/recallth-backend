@@ -18,6 +18,7 @@ import sideEffectsRouter from './routes/sideEffects';
 import exportRouter from './routes/export';
 import journalRouter from './routes/journal';
 import { bloodworkRouter } from './routes/bloodwork';
+import { intakeRouter } from './routes/intake';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -44,6 +45,7 @@ app.use('/side-effects', authenticate, sideEffectsRouter);
 app.use('/export', authenticate, exportRouter);
 app.use('/journal', journalRouter);
 app.use('/bloodwork', bloodworkRouter);
+app.use('/intake', intakeRouter);
 
 // Error handling
 app.use(errorHandler);
