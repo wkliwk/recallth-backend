@@ -29,6 +29,21 @@ const getGenAI = () => {
 
 const router = Router();
 
+// ─── Evidence scores cache (in-memory, 24-hour TTL per user) ─────────────────
+
+interface EvidenceScore {
+  name: string;
+  level: 'A' | 'B' | 'C' | 'D';
+  rationale: string;
+}
+
+const evidenceCache = new Map<string, { scores: EvidenceScore[]; expiresAt: number }>();
+const EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function bustEvidenceCache(userId: string) {
+  evidenceCache.delete(userId);
+}
+
 // ─── Research notes helper ────────────────────────────────────────────────────
 
 async function generateResearchNotes(itemId: string, name: string, type: string): Promise<void> {
@@ -119,6 +134,8 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     data: { ...item.toObject(), interactions: [] },
     error: null,
   });
+
+  bustEvidenceCache(String(req.userId));
 
   // Fire-and-forget research notes generation (non-blocking)
   void generateResearchNotes((item._id as Types.ObjectId).toString(), item.name, item.type);
@@ -226,6 +243,8 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   const nameChanged = updates.name !== undefined && updates.name !== item.name;
   const updated = await CabinetItem.findByIdAndUpdate(id, { $set: updates }, { new: true, runValidators: true });
 
+  bustEvidenceCache(String(req.userId));
+
   res.json({
     success: true,
     data: { ...updated!.toObject(), interactions: [] },
@@ -283,6 +302,8 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
     res.status(403).json({ success: false, data: null, error: 'Forbidden' });
     return;
   }
+
+  bustEvidenceCache(String(req.userId));
 
   // Soft delete: archive the item
   const hardDelete = req.query.hard === 'true';
@@ -1215,6 +1236,67 @@ This is general health information, not personalised medical advice.`;
   } catch (err) {
     console.error('[POST /cabinet/doctor-questions]', err);
     res.status(500).json({ success: false, data: null, error: 'Doctor questions failed' });
+  }
+});
+
+// ─── GET /cabinet/evidence-scores ────────────────────────────────────────────
+
+router.get('/evidence-scores', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId as string;
+
+  // Return cached result if fresh
+  const cached = evidenceCache.get(userId);
+  if (cached && Date.now() < cached.expiresAt) {
+    res.json({ success: true, data: { scores: cached.scores }, error: null });
+    return;
+  }
+
+  try {
+    const userObjectId = new Types.ObjectId(userId);
+    const items = await CabinetItem.find({ userId: userObjectId, active: true }).lean();
+
+    if (items.length === 0) {
+      res.json({ success: true, data: { scores: [] }, error: null });
+      return;
+    }
+
+    const itemList = items.map((i) => ({ name: i.name, type: i.type }));
+    const prompt = `For each supplement/medication listed below, assign an evidence level (A/B/C/D) based on the strength of published human clinical research supporting its claimed benefits. Use these definitions:
+A = Strong evidence from multiple RCTs or systematic reviews
+B = Moderate evidence from some RCTs or observational studies
+C = Limited or mixed evidence — some studies but results are inconsistent
+D = Little to no human evidence — primarily anecdotal or preclinical
+
+Items:
+${JSON.stringify(itemList)}
+
+Return ONLY valid JSON array (no markdown, no extra text):
+[{"name": "...", "level": "A", "rationale": "One sentence explaining why."}]
+
+If you don't recognise an item, assign D and say so in the rationale.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let parsed: EvidenceScore[];
+    try {
+      parsed = JSON.parse(cleaned) as EvidenceScore[];
+      // Validate and normalise
+      parsed = parsed
+        .filter((s) => s.name && ['A', 'B', 'C', 'D'].includes(s.level))
+        .map((s) => ({ name: s.name, level: s.level, rationale: s.rationale ?? '' }));
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse evidence scores from AI' });
+      return;
+    }
+
+    evidenceCache.set(userId, { scores: parsed, expiresAt: Date.now() + EVIDENCE_TTL_MS });
+    res.json({ success: true, data: { scores: parsed }, error: null });
+  } catch (err) {
+    console.error('[GET /cabinet/evidence-scores]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to fetch evidence scores' });
   }
 });
 
