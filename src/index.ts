@@ -7,6 +7,8 @@ import healthRouter from './routes/health';
 import authRouter from './routes/auth';
 import authGoogleRouter from './routes/authGoogle';
 import profileRouter from './routes/profile';
+import cabinetRouter from './routes/cabinet';
+import { authenticate } from './middleware/auth';
 
 dotenv.config();
 
@@ -21,6 +23,7 @@ app.use('/health', healthRouter);
 app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
+app.use('/cabinet', authenticate, cabinetRouter);
 
 // Error handling
 app.use(errorHandler);
