@@ -149,7 +149,12 @@ PROACTIVE INSIGHTS (optional — do this roughly 1 in every 3 responses):
 DISCLAIMER (append to every response in the correct language on a new line):
 - English: "⚠️ This is not medical advice. Consult a healthcare professional for medical decisions."
 - 廣東話: "⚠️ 以上內容並非醫療建議。如有醫療需要，請諮詢專業醫護人員。"
-- 繁體中文: "⚠️ 以上內容僅供參考，並非醫療建議。請諮詢專業醫療人員。"`;
+- 繁體中文: "⚠️ 以上內容僅供參考，並非醫療建議。請諮詢專業醫療人員。"
+
+FOLLOW-UP SUGGESTIONS (mandatory):
+After the disclaimer, on a new line, append EXACTLY this JSON block with 1–3 short follow-up questions the user might naturally ask next (under 10 words each, in the same language as your response):
+{"suggestions":["question 1","question 2","question 3"]}
+Rules: valid JSON only, no markdown, no extra text after it. This is the last line of your response.`;
 }
 
 // --- Extraction types ---
@@ -360,6 +365,24 @@ function generateTitle(message: string): string {
   return trimmed.slice(0, 47) + '...';
 }
 
+// --- Parse suggestions JSON block from AI response ---
+const SUGGESTIONS_REGEX = /\{"suggestions"\s*:\s*\[.*?\]\}/s;
+
+function parseSuggestions(content: string): { clean: string; suggestions: string[] } {
+  const match = content.match(SUGGESTIONS_REGEX);
+  if (!match) return { clean: content, suggestions: [] };
+  try {
+    const parsed = JSON.parse(match[0]) as { suggestions: unknown[] };
+    const suggestions = parsed.suggestions
+      .filter((s): s is string => typeof s === 'string')
+      .slice(0, 3);
+    const clean = content.slice(0, content.lastIndexOf(match[0])).trimEnd();
+    return { clean, suggestions };
+  } catch {
+    return { clean: content, suggestions: [] };
+  }
+}
+
 // --- Main chat function ---
 export interface ChatResult {
   conversationId: string;
@@ -370,6 +393,7 @@ export interface ChatResult {
   };
   extractedData: ExtractionResult | null;
   detectedLanguage: DetectedLanguage;
+  suggestions: string[];
 }
 
 export async function processChat(
@@ -438,12 +462,14 @@ export async function processChat(
 
   const chat = model.startChat({ history });
   const chatResult = await chat.sendMessage(userMessage);
-  const assistantContent = chatResult.response.text();
+  const rawContent = chatResult.response.text();
 
   const usage = chatResult.response.usageMetadata;
   console.log(
     `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=chat`
   );
+
+  const { clean: assistantContent, suggestions } = parseSuggestions(rawContent);
 
   const assistantMsg = {
     role: 'assistant' as const,
@@ -470,5 +496,6 @@ export async function processChat(
     message: assistantMsg,
     extractedData,
     detectedLanguage: language,
+    suggestions,
   };
 }

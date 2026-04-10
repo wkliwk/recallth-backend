@@ -66,6 +66,7 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
       message: result.message,
       extractedData: result.extractedData,
       detectedLanguage: result.detectedLanguage,
+      suggestions: result.suggestions,
     },
   });
 });
