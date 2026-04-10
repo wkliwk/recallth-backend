@@ -1,7 +1,16 @@
 import { Router, Response } from 'express';
 import { Types } from 'mongoose';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { HealthProfile, IChangeEntry } from '../models/HealthProfile';
+import { CabinetItem } from '../models/CabinetItem';
+import { MODELS } from '../config/models';
+
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 const router = Router();
 
@@ -201,6 +210,70 @@ router.get('/weight-trend', authenticate, async (req: AuthRequest, res: Response
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
   res.json({ success: true, data: { entries: weightEntries }, error: null });
+});
+
+// ─── GET /profile/export-report ───────────────────────────────────────────────
+
+router.get('/export-report', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = new Types.ObjectId(req.userId);
+
+  try {
+    const [profile, cabinetItems] = await Promise.all([
+      HealthProfile.findOne({ userId }).lean(),
+      CabinetItem.find({ userId, active: true }).lean(),
+    ]);
+
+    const profileData = profile
+      ? { body: profile.body, diet: profile.diet, exercise: profile.exercise, sleep: profile.sleep, lifestyle: profile.lifestyle, goals: profile.goals }
+      : null;
+
+    const cabinetData = cabinetItems.map((i) => ({
+      name: i.name,
+      type: i.type,
+      dosage: i.dosage,
+      frequency: i.frequency,
+      timing: i.timing,
+      brand: i.brand,
+    }));
+
+    const prompt = `You are a health record summariser. Write a concise, professional health summary report based on the user's data below. This report is intended to be shared with a doctor, nutritionist, or other healthcare professional.
+
+USER HEALTH PROFILE:
+${JSON.stringify(profileData, null, 2)}
+
+SUPPLEMENT & MEDICATION CABINET:
+${JSON.stringify(cabinetData, null, 2)}
+
+Write the report in plain text (no markdown). Include these sections:
+1. PERSONAL STATISTICS — height, weight, age, sex, body composition goals
+2. DIET & NUTRITION — diet type, restrictions, allergies
+3. EXERCISE — type, frequency, intensity, goals
+4. SLEEP — schedule, quality, issues
+5. LIFESTYLE — stress, alcohol, smoking
+6. HEALTH GOALS — primary goals
+7. CURRENT SUPPLEMENT & MEDICATION STACK — list each item with dosage/frequency/timing
+8. NOTES — any AI observations about the profile (gaps, consistency, etc.)
+
+If a section has no data, write "No information provided."
+Start with: "HEALTH SUMMARY REPORT" and include the date: ${new Date().toDateString()}
+End with a disclaimer: "This report is informational only and does not constitute medical advice."`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const report = result.response.text().trim();
+
+    res.json({
+      success: true,
+      error: null,
+      data: {
+        report,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    console.error('[GET /profile/export-report]', err);
+    res.status(500).json({ success: false, error: 'Failed to generate report', data: null });
+  }
 });
 
 export default router;
