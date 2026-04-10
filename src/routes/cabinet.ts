@@ -1,9 +1,17 @@
 import { Router, Response, Request } from 'express';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { CabinetItem, CabinetItemType } from '../models/CabinetItem';
 import { SharedStack } from '../models/SharedStack';
+import { MODELS } from '../config/models';
+
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 const router = Router();
 
@@ -225,6 +233,67 @@ router.get('/budget-summary', async (req: AuthRequest, res: Response): Promise<v
       items: priced.map((i) => ({ name: i.name, price: i.price, currency: i.currency ?? 'HKD' })),
     },
   });
+});
+
+// POST /cabinet/scan — OCR a supplement bottle label via Gemini Vision
+router.post('/scan', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
+
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    res.status(400).json({ success: false, data: null, error: 'imageBase64 is required' });
+    return;
+  }
+
+  const validMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+  const resolvedMime = (mimeType && validMimeTypes.includes(mimeType)) ? mimeType : 'image/jpeg';
+
+  try {
+    const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
+
+    const prompt = `You are analysing a photo of a supplement or medication bottle label. Extract the following fields and return ONLY valid JSON.
+
+Extract:
+{
+  "name": string,         // product name (e.g. "Magnesium Glycinate")
+  "brand": string | null, // brand/manufacturer (e.g. "NOW Foods")
+  "type": string,         // one of: "supplement", "medication", "vitamin"
+  "dosage": string | null,// dosage per serving (e.g. "400mg", "2 capsules")
+  "servingSize": string | null, // serving size if different from dosage
+  "ingredients": string | null  // key active ingredients, comma separated
+}
+
+Rules:
+- If you cannot read the label clearly, extract what you can and set unclear fields to null
+- "type" must be one of the three values above — default to "supplement" if unsure
+- Do not invent values — only extract what is visibly on the label
+- Return ONLY valid JSON, no markdown fences`;
+
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: resolvedMime, data: imageBase64 } },
+    ]);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.EXTRACTION} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=label-scan`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let extracted: Record<string, unknown>;
+    try {
+      extracted = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse label — try a clearer photo' });
+      return;
+    }
+
+    res.json({ success: true, error: null, data: extracted });
+  } catch (err) {
+    console.error('[POST /cabinet/scan]', err);
+    res.status(500).json({ success: false, data: null, error: 'Scan failed' });
+  }
 });
 
 export default router;
