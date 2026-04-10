@@ -19,6 +19,7 @@ import exportRouter from './routes/export';
 import journalRouter from './routes/journal';
 import { bloodworkRouter } from './routes/bloodwork';
 import { intakeRouter } from './routes/intake';
+import { settingsRouter } from './routes/settings';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -46,6 +47,7 @@ app.use('/export', authenticate, exportRouter);
 app.use('/journal', journalRouter);
 app.use('/bloodwork', bloodworkRouter);
 app.use('/intake', intakeRouter);
+app.use('/settings', authenticate, settingsRouter);
 
 // Error handling
 app.use(errorHandler);
