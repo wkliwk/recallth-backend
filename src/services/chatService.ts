@@ -7,7 +7,11 @@ import { Conversation } from '../models/Conversation';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY!);
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 // --- Rate limiting ---
 interface RateLimitEntry {
@@ -187,7 +191,7 @@ Extract these fields if mentioned (use null for anything not mentioned):
 
 Only include fields explicitly stated. Return null if nothing to extract. Respond only with JSON.`;
 
-  const model = genAI.getGenerativeModel({ model: MODELS.EXTRACTION });
+  const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
   const result = await model.generateContent(extractionPrompt);
   const text = result.response.text().trim();
 
@@ -364,7 +368,7 @@ export async function processChat(
 
   // Call Gemini for chat response
   const systemPrompt = buildSystemPrompt(profile, cabinetItems, language);
-  const model = genAI.getGenerativeModel({
+  const model = getGenAI().getGenerativeModel({
     model: MODELS.CHAT,
     systemInstruction: systemPrompt,
   });
