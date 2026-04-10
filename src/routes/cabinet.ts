@@ -373,4 +373,63 @@ Do NOT include markdown fences. Return only the JSON array.`;
   }
 });
 
+// GET /cabinet/schedule — group active items by time-of-day slot
+router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> => {
+  const ownerId = new Types.ObjectId(req.userId);
+  const scopedUserId = await resolveScopedUserId(ownerId, req.query.memberId as string | undefined);
+  if (!scopedUserId) {
+    res.status(404).json({ success: false, data: null, error: 'Family member not found' });
+    return;
+  }
+
+  const items = await CabinetItem.find({ userId: scopedUserId, active: true }).lean();
+
+  type Slot = 'morning' | 'afternoon' | 'evening' | 'night' | 'anytime';
+
+  const SLOT_KEYWORDS: Record<Slot, string[]> = {
+    morning: ['morning', 'am', 'wake up', 'breakfast', 'empty stomach'],
+    afternoon: ['afternoon', 'lunch', 'midday'],
+    evening: ['evening', 'dinner', 'pm', 'with dinner'],
+    night: ['night', 'bedtime', 'before bed', 'sleep'],
+    anytime: [],
+  };
+
+  function classifyTiming(timing?: string): Slot {
+    if (!timing) return 'anytime';
+    const lower = timing.toLowerCase();
+    for (const slot of (['morning', 'afternoon', 'evening', 'night'] as Slot[])) {
+      if (SLOT_KEYWORDS[slot].some((kw) => lower.includes(kw))) return slot;
+    }
+    return 'anytime';
+  }
+
+  const schedule: Record<Slot, Array<{ id: string; name: string; dosage?: string; timing?: string; type: string }>> = {
+    morning: [],
+    afternoon: [],
+    evening: [],
+    night: [],
+    anytime: [],
+  };
+
+  for (const item of items) {
+    const slot = classifyTiming(item.timing);
+    schedule[slot].push({
+      id: (item._id as Types.ObjectId).toString(),
+      name: item.name,
+      dosage: item.dosage,
+      timing: item.timing,
+      type: item.type,
+    });
+  }
+
+  res.json({
+    success: true,
+    error: null,
+    data: {
+      schedule,
+      totalActive: items.length,
+    },
+  });
+});
+
 export default router;
