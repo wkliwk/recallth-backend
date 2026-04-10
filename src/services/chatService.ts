@@ -251,9 +251,25 @@ async function applyExtractedData(
   }
 
   if (Object.keys(profileSet).length > 1) {
+    // Capture old values for change history before updating
+    const existing = await HealthProfile.findOne({ userId }, { body: 1 }).lean();
+
     await HealthProfile.findOneAndUpdate(
       { userId },
-      { $set: profileSet },
+      {
+        $set: profileSet,
+        $push: {
+          changeHistory: {
+            $each: profileReviews.map((r) => ({
+              field: r.field,
+              oldValue: existing ? (existing as unknown as Record<string, unknown>)[r.field.split('.')[0]] : null,
+              newValue: r.extractedValue,
+              source: 'ai_extracted' as const,
+              timestamp: new Date(),
+            })),
+          },
+        },
+      },
       { upsert: true, new: true }
     );
 

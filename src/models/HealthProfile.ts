@@ -47,7 +47,7 @@ export interface IChangeEntry {
   field: string;
   oldValue: unknown;
   newValue: unknown;
-  source: 'user_input';
+  source: 'user_input' | 'ai_extracted';
   timestamp: Date;
 }
 
@@ -130,7 +130,7 @@ const ChangeEntrySchema = new Schema<IChangeEntry>(
     field: { type: String, required: true },
     oldValue: { type: Schema.Types.Mixed },
     newValue: { type: Schema.Types.Mixed },
-    source: { type: String, enum: ['user_input'], default: 'user_input', required: true },
+    source: { type: String, enum: ['user_input', 'ai_extracted'], default: 'user_input', required: true },
     timestamp: { type: Date, default: Date.now, required: true },
   },
   { _id: false }

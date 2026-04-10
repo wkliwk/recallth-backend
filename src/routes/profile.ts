@@ -178,4 +178,29 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
   res.json({ success: true, data: updated, error: null });
 });
 
+// ─── GET /profile/weight-trend ─────────────────────────────────────────────
+
+router.get('/weight-trend', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = new Types.ObjectId(req.userId);
+
+  const profile = await HealthProfile.findOne({ userId }, { changeHistory: 1, 'body.weight': 1 }).lean();
+
+  if (!profile) {
+    res.json({ success: true, data: { entries: [] }, error: null });
+    return;
+  }
+
+  // Filter changeHistory for weight entries
+  const weightEntries = (profile.changeHistory ?? [])
+    .filter((entry) => entry.field === 'body.weight' && entry.newValue !== null && entry.newValue !== undefined)
+    .map((entry) => ({
+      timestamp: entry.timestamp,
+      value: entry.newValue as number,
+      source: entry.source,
+    }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  res.json({ success: true, data: { entries: weightEntries }, error: null });
+});
+
 export default router;
