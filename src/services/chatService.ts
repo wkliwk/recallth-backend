@@ -358,11 +358,33 @@ async function applyExtractedData(
   }
 }
 
-// --- Generate title from first message ---
+// --- Generate title from first message (fallback) ---
 function generateTitle(message: string): string {
   const trimmed = message.trim();
-  if (trimmed.length <= 50) return trimmed;
-  return trimmed.slice(0, 47) + '...';
+  if (trimmed.length <= 60) return trimmed;
+  return trimmed.slice(0, 57) + '...';
+}
+
+// --- AI-generated title + summary after first exchange ---
+async function generateTitleAndSummary(
+  conversationId: string,
+  firstUserMessage: string
+): Promise<void> {
+  try {
+    const prompt = `Given this user question: "${firstUserMessage.slice(0, 500)}", write a conversation title in 6–8 words and a one-sentence summary. Return JSON only, no markdown: {"title": "...", "summary": "..."}`;
+    const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(cleaned) as { title?: string; summary?: string };
+    const title = (parsed.title ?? '').slice(0, 80).trim();
+    const summary = (parsed.summary ?? '').slice(0, 200).trim();
+    if (title) {
+      await Conversation.findByIdAndUpdate(conversationId, { title, summary });
+    }
+  } catch (err) {
+    console.error('[Chat] Title generation error (non-fatal):', err);
+  }
 }
 
 // --- Parse suggestions JSON block from AI response ---
@@ -478,6 +500,11 @@ export async function processChat(
   };
   conversation.messages.push(assistantMsg);
   await conversation.save();
+
+  // Fire async title+summary generation after first exchange (non-blocking)
+  if (conversation.messages.length === 2 && !conversationId) {
+    void generateTitleAndSummary(String(conversation._id), userMessage);
+  }
 
   // Run extraction in parallel (non-blocking on response, but we await to include in response)
   let extractedData: ExtractionResult | null = null;
