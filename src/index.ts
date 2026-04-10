@@ -6,6 +6,7 @@ import { errorHandler } from './middleware/errorHandler';
 import healthRouter from './routes/health';
 import authRouter from './routes/auth';
 import authGoogleRouter from './routes/authGoogle';
+import profileRouter from './routes/profile';
 
 dotenv.config();
 
@@ -19,6 +20,7 @@ app.use(express.json());
 app.use('/health', healthRouter);
 app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
+app.use('/profile', profileRouter);
 
 // Error handling
 app.use(errorHandler);
