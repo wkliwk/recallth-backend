@@ -24,39 +24,42 @@ npm run dev
 | `npm start` | Run compiled JS from `dist/index.js` |
 | `npm run typecheck` | Run tsc --noEmit (no output files) |
 
-## Deployment
+## Deployment (Fly.io)
 
-### Railway (Production)
+### One-time setup
 
-Railway auto-deploys from the `main` branch on every push. Configuration lives in `railway.toml`.
+1. Install Fly CLI: `curl -L https://fly.io/install.sh | sh`
+2. Login: `fly auth login`
+3. Create app: `fly apps create recallth-backend`
+4. Set secrets (do this once):
+   ```
+   fly secrets set MONGODB_URI="your-atlas-connection-string"
+   fly secrets set JWT_SECRET="your-jwt-secret-min-32-chars"
+   fly secrets set ANTHROPIC_API_KEY="sk-ant-..."
+   fly secrets set GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
+   ```
+5. Deploy: `fly deploy`
 
-**Manual first-time setup (Railway dashboard):**
+### MongoDB
 
-1. Go to [railway.app](https://railway.app) and create a new project
-2. Select "Deploy from GitHub repo" and connect `wkliwk/recallth-backend`
-3. Set the following environment variables in the Railway service settings:
-
-| Variable | Description | Example |
-|---|---|---|
-| `PORT` | Server port (Railway sets this automatically) | `3001` |
-| `NODE_ENV` | Runtime environment | `production` |
-| `MONGODB_URI` | MongoDB Atlas connection string | `mongodb+srv://user:pass@cluster.mongodb.net/recallth` |
-| `JWT_SECRET` | Secret for signing JWT tokens — min 32 chars, high entropy | — |
-| `ANTHROPIC_API_KEY` | Anthropic API key for AI features | `sk-ant-...` |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID for social login | `....apps.googleusercontent.com` |
-
-> Never commit secrets to the repo. Set them only in the Railway dashboard.
-
-4. Railway will detect `railway.toml` and run:
-   - Build: `npm run build` (via nixpacks)
-   - Start: `npm start`
+Use MongoDB Atlas free tier (M0 cluster at cloud.mongodb.com). Set the connection string as MONGODB_URI secret above.
 
 ### Health Check
 
-The `/health` endpoint is configured as Railway's health check target. It must return HTTP 200 for Railway to consider the deployment healthy.
+The `/health` endpoint is used as Fly.io's health check target. It must return HTTP 200 for the deployment to be considered healthy.
 
 ```
 GET /health → 200 OK
+```
+
+### Get your backend URL
+
+After deploy: `fly status` → the URL is `https://recallth-backend.fly.dev`
+
+### Re-deploy after code changes
+
+```
+fly deploy
 ```
 
 ### CORS
