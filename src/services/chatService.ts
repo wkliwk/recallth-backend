@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { HealthProfile, IHealthProfile } from '../models/HealthProfile';
 import { CabinetItem, ICabinetItem } from '../models/CabinetItem';
 import { Conversation } from '../models/Conversation';
+import { detectLanguage, DetectedLanguage } from '../utils/language';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -36,8 +37,25 @@ export function checkRateLimit(userId: string): { allowed: boolean; remaining: n
   return { allowed: true, remaining: RATE_LIMIT_MAX - entry.count, resetAt: entry.resetAt };
 }
 
+// --- Language instruction builder ---
+function buildLanguageInstruction(language: DetectedLanguage): string {
+  switch (language) {
+    case 'zh-HK':
+      return `LANGUAGE: The user is writing in Cantonese (廣東話). You MUST respond entirely in Cantonese (廣東話). Use natural conversational Cantonese, not formal Mandarin. Use Cantonese particles like 係、唔、嘅、喺、啩、囉 etc.`;
+    case 'zh-TW':
+      return `LANGUAGE: The user is writing in Traditional Chinese (繁體中文). You MUST respond entirely in Traditional Chinese. Use proper Traditional Chinese characters (not Simplified).`;
+    case 'en':
+    default:
+      return `LANGUAGE: Respond in English.`;
+  }
+}
+
 // --- System prompt builder ---
-function buildSystemPrompt(profile: IHealthProfile | null, cabinetItems: ICabinetItem[]): string {
+function buildSystemPrompt(
+  profile: IHealthProfile | null,
+  cabinetItems: ICabinetItem[],
+  language: DetectedLanguage
+): string {
   const profileData = profile
     ? {
         body: profile.body,
@@ -58,6 +76,8 @@ function buildSystemPrompt(profile: IHealthProfile | null, cabinetItems: ICabine
     brand: item.brand,
   }));
 
+  const languageInstruction = buildLanguageInstruction(language);
+
   return `You are Recallth, a personal AI health advisor with perfect memory of this user's health profile.
 
 USER HEALTH PROFILE:
@@ -66,15 +86,27 @@ ${JSON.stringify(profileData, null, 2)}
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
 
+${languageInstruction}
+
+LANGUAGE RULES:
+- Detect the language of the user's message
+- Always respond in the SAME language the user writes in
+- If user writes in 廣東話 (Cantonese), respond in 廣東話 with traditional characters
+- If user writes in 繁體中文, respond in 繁體中文
+- If user writes in English, respond in English
+- Never mix languages in a single response unless the user does
+
 INSTRUCTIONS:
 - Always personalise responses using the user's actual data above
 - Reference specific values (e.g. "given your 400mg magnesium intake...")
 - If a profile field is empty/missing, do NOT assume or invent values
-- Support English, Cantonese, and Chinese — respond in the same language the user writes in
-- After EVERY response, append this disclaimer on a new line:
-  "⚠️ This is not medical advice. Consult a healthcare professional for medical decisions."
 - Be warm, helpful, and direct — like a knowledgeable friend, not a clinical report
-- If asked about something outside health/wellness, politely redirect`;
+- If asked about something outside health/wellness, politely redirect
+
+DISCLAIMER (append to every response in the correct language on a new line):
+- English: "⚠️ This is not medical advice. Consult a healthcare professional for medical decisions."
+- 廣東話: "⚠️ 以上內容並非醫療建議。如有醫療需要，請諮詢專業醫護人員。"
+- 繁體中文: "⚠️ 以上內容僅供參考，並非醫療建議。請諮詢專業醫療人員。"`;
 }
 
 // --- Extraction types ---
@@ -131,7 +163,14 @@ interface ExtractionResult {
 
 // --- Profile extraction ---
 async function extractHealthData(userMessage: string): Promise<ExtractionResult | null> {
-  const extractionPrompt = `Extract any health profile data from this user message. Return ONLY valid JSON or null.
+  const extractionPrompt = `Extract any health profile data from this user message. The message may be in English, Cantonese (廣東話), or Traditional Chinese (繁體中文). Return ONLY valid JSON or null.
+
+Cantonese/Chinese interpretation hints:
+- "食緊" / "正在服用" / "有食" = currently taking (supplement or medication)
+- "我185cm 78kg" = height 185cm, weight 78kg
+- "每星期...三次" = frequency three times per week
+- "做gym" / "做運動" = exercise/gym
+- "我食緊creatine同magnesium" = cabinet items: creatine and magnesium
 
 User message: ${userMessage}
 
@@ -235,6 +274,7 @@ export interface ChatResult {
     timestamp: Date;
   };
   extractedData: ExtractionResult | null;
+  detectedLanguage: DetectedLanguage;
 }
 
 export async function processChat(
@@ -243,6 +283,9 @@ export async function processChat(
   conversationId?: string
 ): Promise<ChatResult> {
   const userObjectId = new Types.ObjectId(userId);
+
+  // Detect language from user message
+  const language = detectLanguage(userMessage);
 
   // Load profile and cabinet in parallel
   const [profile, cabinetItems] = await Promise.all([
@@ -281,7 +324,7 @@ export async function processChat(
   }));
 
   // Call Claude for chat response
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language);
 
   const chatResponse = await anthropic.messages.create({
     model: 'claude-opus-4-5',
@@ -317,5 +360,6 @@ export async function processChat(
     conversationId: String(conversation._id),
     message: assistantMsg,
     extractedData,
+    detectedLanguage: language,
   };
 }
