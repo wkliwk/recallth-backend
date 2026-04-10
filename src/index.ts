@@ -38,7 +38,7 @@ app.use(errorHandler);
 
 const start = async () => {
   await connectDB();
-  app.listen(PORT, () => {
+  app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Recallth API running on port ${PORT}`);
   });
 };
