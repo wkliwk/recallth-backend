@@ -321,4 +321,56 @@ Rules:
   }
 });
 
+// GET /cabinet/deal-finder — AI buying tips for each active supplement
+router.get('/deal-finder', async (req: AuthRequest, res: Response): Promise<void> => {
+  const items = await CabinetItem.find({ userId: req.userId, active: true }).lean();
+
+  if (items.length === 0) {
+    res.json({ success: true, error: null, data: [] });
+    return;
+  }
+
+  const supplementList = items.map((i) => `${i.name}${i.brand ? ` (${i.brand})` : ''}`).join('\n');
+
+  const prompt = `You are a supplement buying advisor for Hong Kong shoppers. For each supplement below, give 1–2 practical buying tips for HK shoppers — best platform to buy from, typical price range in HKD, and any money-saving tips (e.g. buy in bulk, subscribe & save, iHerb coupon codes).
+
+Supplements:
+${supplementList}
+
+Return ONLY valid JSON array. For each supplement, one object:
+{
+  "itemName": string,
+  "tips": string,       // 1-2 sentences of practical advice
+  "bestPlatform": string // e.g. "iHerb HK", "HKTVmall", "Mannings", "Watsons", "iHerb.com"
+}
+
+Do NOT include markdown fences. Return only the JSON array.`;
+
+  try {
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=deal-finder`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let tips: Array<{ itemName: string; tips: string; bestPlatform: string }>;
+    try {
+      tips = JSON.parse(cleaned) as typeof tips;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse AI response' });
+      return;
+    }
+
+    res.json({ success: true, error: null, data: tips });
+  } catch (err) {
+    console.error('[GET /cabinet/deal-finder]', err);
+    res.status(500).json({ success: false, data: null, error: 'Deal finder failed' });
+  }
+});
+
 export default router;
