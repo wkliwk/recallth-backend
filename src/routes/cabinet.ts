@@ -44,6 +44,23 @@ function bustEvidenceCache(userId: string) {
   evidenceCache.delete(userId);
 }
 
+// ─── Redundancy cache (in-memory, 1-hour TTL per user) ───────────────────────
+
+interface RedundancyEntry {
+  items: string[];
+  nutrient: string;
+  risk: 'low' | 'moderate' | 'high';
+  explanation: string;
+  recommendation: string;
+}
+
+const redundancyCache = new Map<string, { redundancies: RedundancyEntry[]; expiresAt: number }>();
+const REDUNDANCY_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function bustRedundancyCache(userId: string) {
+  redundancyCache.delete(userId);
+}
+
 // ─── Research notes helper ────────────────────────────────────────────────────
 
 async function generateResearchNotes(itemId: string, name: string, type: string): Promise<void> {
@@ -136,6 +153,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   });
 
   bustEvidenceCache(String(req.userId));
+  bustRedundancyCache(String(req.userId));
 
   // Fire-and-forget research notes generation (non-blocking)
   void generateResearchNotes((item._id as Types.ObjectId).toString(), item.name, item.type);
@@ -244,6 +262,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
   const updated = await CabinetItem.findByIdAndUpdate(id, { $set: updates }, { new: true, runValidators: true });
 
   bustEvidenceCache(String(req.userId));
+  bustRedundancyCache(String(req.userId));
 
   res.json({
     success: true,
@@ -304,6 +323,7 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
   }
 
   bustEvidenceCache(String(req.userId));
+  bustRedundancyCache(String(req.userId));
 
   // Soft delete: archive the item
   const hardDelete = req.query.hard === 'true';
@@ -1297,6 +1317,85 @@ If you don't recognise an item, assign D and say so in the rationale.`;
   } catch (err) {
     console.error('[GET /cabinet/evidence-scores]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to fetch evidence scores' });
+  }
+});
+
+// ─── GET /cabinet/redundancies ───────────────────────────────────────────────
+
+router.get('/redundancies', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId as string;
+
+  // Return cached result if fresh
+  const cached = redundancyCache.get(userId);
+  if (cached && Date.now() < cached.expiresAt) {
+    res.json({ success: true, data: { redundancies: cached.redundancies }, error: null });
+    return;
+  }
+
+  try {
+    const items = await CabinetItem.find({ userId: new Types.ObjectId(userId), active: true }).lean();
+
+    if (items.length < 2) {
+      res.json({ success: true, data: { redundancies: [] }, error: null });
+      return;
+    }
+
+    const itemList = items.map((i) => ({
+      name: i.name,
+      type: i.type,
+      dosage: i.dosage ?? null,
+    }));
+
+    const prompt = `You are a supplement safety expert. The user has the following active supplements/medications in their cabinet:
+
+${JSON.stringify(itemList, null, 2)}
+
+Identify any groups of items where the user is likely getting duplicate or excessive intake of the same nutrient. For each group you find, explain the overlap and what risk it poses.
+
+IMPORTANT RULES:
+- Only flag genuine overlaps you are highly confident about
+- Do not speculate about vague possible overlaps
+- If you see no clear redundancies, return an empty array
+
+Return ONLY valid JSON (no markdown):
+{
+  "redundancies": [
+    {
+      "items": ["item name 1", "item name 2"],
+      "nutrient": "nutrient name",
+      "risk": "low|moderate|high",
+      "explanation": "one to two sentences explaining the overlap",
+      "recommendation": "one sentence on what to do"
+    }
+  ]
+}`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let redundancies: RedundancyEntry[];
+    try {
+      const parsed = JSON.parse(cleaned) as { redundancies?: RedundancyEntry[] };
+      redundancies = (parsed.redundancies ?? []).filter(
+        (r) =>
+          Array.isArray(r.items) &&
+          r.items.length >= 2 &&
+          typeof r.nutrient === 'string' &&
+          ['low', 'moderate', 'high'].includes(r.risk) &&
+          typeof r.explanation === 'string' &&
+          typeof r.recommendation === 'string'
+      );
+    } catch {
+      redundancies = [];
+    }
+
+    redundancyCache.set(userId, { redundancies, expiresAt: Date.now() + REDUNDANCY_TTL_MS });
+    res.json({ success: true, data: { redundancies }, error: null });
+  } catch (err) {
+    console.error('[GET /cabinet/redundancies]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to analyse redundancies' });
   }
 });
 
