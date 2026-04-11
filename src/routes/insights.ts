@@ -105,7 +105,7 @@ router.post('/daily-brief', async (req: AuthRequest, res: Response): Promise<voi
       const parts: string[] = [`${log.date}:`];
       if (log.mood !== undefined) parts.push(`mood ${log.mood}/5`);
       if (log.energy !== undefined) parts.push(`energy ${log.energy}/5`);
-      if (log.sleep !== undefined) parts.push(`sleep ${log.sleep}h`);
+      // DailyLog has no sleep field
       if (log.notes) parts.push(`notes: "${log.notes.slice(0, 80)}"`);
       return parts.join(' ');
     }).join('\n');
