@@ -405,6 +405,37 @@ function parseSuggestions(content: string): { clean: string; suggestions: string
   }
 }
 
+// --- Transform extraction result to frontend shape ---
+export interface FrontendExtractedData {
+  profile?: Record<string, unknown>;
+  cabinet?: Array<{ name: string; action: 'added' | 'updated' }>;
+}
+
+function toFrontendExtraction(extracted: ExtractionResult | null): FrontendExtractedData | null {
+  if (!extracted) return null;
+
+  const profile: Record<string, unknown> = {};
+  const categories = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals'] as const;
+  for (const category of categories) {
+    const data = extracted[category] as Record<string, unknown> | undefined;
+    if (!data) continue;
+    for (const [key, value] of Object.entries(data)) {
+      if (value !== null && value !== undefined) {
+        profile[`${category}.${key}`] = value;
+      }
+    }
+  }
+
+  const cabinet = (extracted.cabinetItems ?? [])
+    .filter((item) => item.name)
+    .map((item) => ({ name: item.name!, action: 'added' as const }));
+
+  const result: FrontendExtractedData = {};
+  if (Object.keys(profile).length > 0) result.profile = profile;
+  if (cabinet.length > 0) result.cabinet = cabinet;
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // --- Main chat function ---
 export interface ChatResult {
   conversationId: string;
@@ -413,7 +444,7 @@ export interface ChatResult {
     content: string;
     timestamp: Date;
   };
-  extractedData: ExtractionResult | null;
+  extractedData: FrontendExtractedData | null;
   detectedLanguage: DetectedLanguage;
   suggestions: string[];
 }
@@ -521,7 +552,7 @@ export async function processChat(
   return {
     conversationId: String(conversation._id),
     message: assistantMsg,
-    extractedData,
+    extractedData: toFrontendExtraction(extractedData),
     detectedLanguage: language,
     suggestions,
   };
