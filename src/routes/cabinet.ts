@@ -9,6 +9,7 @@ import { FamilyMember } from '../models/FamilyMember';
 import { SideEffect } from '../models/SideEffect';
 import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
+import { InsightCache } from '../models/InsightCache';
 
 async function resolveScopedUserId(
   ownerId: Types.ObjectId,
@@ -1443,6 +1444,133 @@ Keep each value under 90 characters.`;
   } catch (err) {
     console.error('[POST /cabinet/first-insight]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to generate insight' });
+  }
+});
+
+
+// ─── GET /cabinet/:id/research — deep-dive research panel ───────────────────
+
+const DEEP_RESEARCH_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+router.get('/:id/research', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const itemId = String(req.params.id);
+    if (!Types.ObjectId.isValid(itemId)) { res.status(400).json({ success: false, data: null, error: 'Invalid item id' }); return; }
+
+    const userObjectId = new Types.ObjectId(userId);
+    const forceRefresh = req.query.refresh === 'true';
+    const cacheType = `deep-research:${itemId}`;
+
+    const cached = await InsightCache.findOne({ userId: userObjectId, type: cacheType }).lean();
+    const now = Date.now();
+    const isFresh = cached && (now - cached.generatedAt.getTime()) < DEEP_RESEARCH_TTL_MS;
+
+    if (isFresh && !forceRefresh) {
+      let data: unknown;
+      try { data = JSON.parse(cached.content); } catch { data = null; }
+      res.json({ success: true, data: { research: data, generatedAt: cached.generatedAt.toISOString(), fromCache: true }, error: null });
+      return;
+    }
+
+    if (forceRefresh && cached && isFresh) {
+      const ageMs = now - cached.generatedAt.getTime();
+      let data: unknown;
+      try { data = JSON.parse(cached.content); } catch { data = null; }
+      res.status(429).json({
+        success: false,
+        data: { research: data, generatedAt: cached.generatedAt.toISOString(), retryAfterMs: DEEP_RESEARCH_TTL_MS - ageMs },
+        error: 'Research can only be refreshed once every 7 days per item',
+      });
+      return;
+    }
+
+    const [item, profile] = await Promise.all([
+      CabinetItem.findOne({ _id: new Types.ObjectId(itemId), userId: userObjectId }).lean(),
+      HealthProfile.findOne({ userId: userObjectId }).lean(),
+    ]);
+
+    if (!item) { res.status(404).json({ success: false, data: null, error: 'Item not found' }); return; }
+
+    const goals = Array.isArray(profile?.goals?.primary) && profile.goals.primary.length > 0
+      ? profile.goals.primary.join(', ')
+      : 'general health and wellness';
+    const currentDosage = item.dosage || 'not specified';
+
+    const GRADE_MAP: Record<string, string> = {
+      A: 'Grade A — strong evidence from multiple randomised controlled trials or systematic reviews',
+      B: 'Grade B — moderate evidence from some RCTs or well-designed observational studies',
+      C: 'Grade C — limited or mixed evidence; results are inconsistent across studies',
+      D: 'Grade D — little to no human evidence; primarily anecdotal or preclinical research',
+    };
+
+    const prompt = `You are a research-based health advisor. Provide a detailed evidence summary for the following supplement.
+
+Supplement: ${item.name}
+Type: ${item.type}
+User current dosage: ${currentDosage}
+User health goals: ${goals}
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "grade": "A|B|C|D",
+  "gradeExplanation": "<one sentence explaining why this grade — cite study type e.g. RCT, meta-analysis>",
+  "findings": ["<finding 1 related to user goals>", "<finding 2>", "<finding 3>"],
+  "dosageRange": "<evidence-supported dosage range e.g. 300–600mg daily>",
+  "dosageComparison": "<one sentence comparing user dose to evidence range — or null if user dose not specified>",
+  "citations": ["<url 1>", "<url 2>"]
+}
+
+Rules:
+- Keep each finding to 1 sentence, make it specific and data-driven
+- Citations must be real examine.com or pubmed.ncbi.nlm.nih.gov URLs
+- If you are not confident about a citation URL, omit it rather than fabricate it
+- This is informational only, not personalised medical advice`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^[\`]{0,3}(?:json)?\s*/i, '').replace(/\s*[\`]{0,3}$/, '').trim();
+
+    let research: {
+      grade: string;
+      gradeExplanation: string;
+      findings: string[];
+      dosageRange: string;
+      dosageComparison: string | null;
+      citations: string[];
+    };
+
+    try {
+      const parsed = JSON.parse(cleaned) as typeof research;
+      research = {
+        grade: ['A','B','C','D'].includes(parsed.grade) ? parsed.grade : 'C',
+        gradeExplanation: parsed.gradeExplanation || GRADE_MAP[parsed.grade] || '',
+        findings: Array.isArray(parsed.findings) ? parsed.findings.slice(0, 3) : [],
+        dosageRange: parsed.dosageRange || '',
+        dosageComparison: parsed.dosageComparison || null,
+        citations: Array.isArray(parsed.citations) ? parsed.citations.filter((u: unknown) => typeof u === 'string').slice(0, 2) : [],
+      };
+    } catch {
+      research = { grade: 'C', gradeExplanation: GRADE_MAP['C'], findings: [], dosageRange: '', dosageComparison: null, citations: [] };
+    }
+
+    const generatedAt = new Date();
+    await InsightCache.findOneAndUpdate(
+      { userId: userObjectId, type: cacheType },
+      { content: JSON.stringify(research), generatedAt },
+      { upsert: true, new: true }
+    );
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=deep-research item=${item.name}`);
+
+    res.json({ success: true, data: { research, generatedAt: generatedAt.toISOString(), fromCache: false }, error: null });
+  } catch (err) {
+    console.error('[GET /cabinet/:id/research]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to generate research' });
   }
 });
 
