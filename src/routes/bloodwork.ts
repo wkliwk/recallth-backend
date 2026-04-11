@@ -5,6 +5,7 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { BloodworkEntry } from '../models/BloodworkEntry';
 import { CabinetItem } from '../models/CabinetItem';
 import { HealthProfile } from '../models/HealthProfile';
+import { InsightCache } from '../models/InsightCache';
 import { MODELS } from '../config/models';
 
 const router = Router();
@@ -199,6 +200,158 @@ Rules:
   } catch (err) {
     console.error('[POST /bloodwork/analyse]', err);
     res.status(500).json({ success: false, data: null, error: 'Bloodwork analysis failed' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /bloodwork/interpret — personalised AI interpretation with 24h cache
+// ---------------------------------------------------------------------------
+const INTERPRET_CACHE_TYPE = 'bloodwork-interpret-v1';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface BloodworkInterpretation {
+  marker: string;
+  latestValue: number;
+  unit: string;
+  status: 'above_range' | 'below_range' | 'in_range';
+  summary: string;
+  personalised_insight: string;
+  recommendation: string;
+  supplement_link: string[];
+  priority: 'high' | 'medium' | 'low';
+}
+
+interface InterpretResponse {
+  interpretations: BloodworkInterpretation[];
+  overall_summary: string;
+  generated_at: string;
+}
+
+router.post('/interpret', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    // Check cache (24h TTL)
+    const cached = await InsightCache.findOne({ userId, type: INTERPRET_CACHE_TYPE });
+    if (cached) {
+      const age = Date.now() - cached.generatedAt.getTime();
+      if (age < CACHE_TTL_MS) {
+        const parsed = JSON.parse(cached.content) as InterpretResponse;
+        res.json({ success: true, data: parsed, error: null });
+        return;
+      }
+    }
+
+    // Gather data in parallel
+    const [allEntries, profile, cabinetItems] = await Promise.all([
+      BloodworkEntry.find({ userId }).sort({ date: 1, createdAt: 1 }).lean(),
+      HealthProfile.findOne({ userId }).lean(),
+      CabinetItem.find({ userId, active: true }).lean(),
+    ]);
+
+    // Return empty if no bloodwork logged
+    if (allEntries.length === 0) {
+      const empty: InterpretResponse = { interpretations: [], overall_summary: '', generated_at: new Date().toISOString() };
+      res.json({ success: true, data: empty, error: null });
+      return;
+    }
+
+    // Build per-marker timeline (latest value + all historical values for trend)
+    const markerMap = new Map<string, { latest: typeof allEntries[0]; values: number[] }>();
+    for (const e of allEntries) {
+      const entry = markerMap.get(e.marker);
+      if (!entry) {
+        markerMap.set(e.marker, { latest: e, values: [e.value] });
+      } else {
+        entry.latest = e;
+        entry.values.push(e.value);
+      }
+    }
+
+    const bloodworkLines = [...markerMap.entries()]
+      .map(([marker, { latest, values }]) => {
+        const trend = values.length > 1
+          ? (values[values.length - 1] > values[0] ? '↑ trending up' : values[values.length - 1] < values[0] ? '↓ trending down' : '→ stable')
+          : '';
+        return `- ${marker}: ${latest.value} ${latest.unit} (measured ${latest.date})${trend ? ' ' + trend : ''}`;
+      })
+      .join('\n');
+
+    const supplementLines = cabinetItems.length > 0
+      ? cabinetItems.map((i) => `- ${i.name}${i.dosage ? ` ${i.dosage}` : ''}${i.timing ? ` (${i.timing})` : ''}`).join('\n')
+      : 'None';
+
+    const body = profile?.body;
+    const goals = (profile?.goals?.primary ?? []).join(', ') || 'general wellness';
+    const profileSnippet = [
+      body?.age ? `Age: ${body.age}` : null,
+      body?.sex ? `Sex: ${body.sex}` : null,
+      body?.weight ? `Weight: ${body.weight} kg` : null,
+      profile?.exercise?.type?.length ? `Exercise: ${profile.exercise.type.join(', ')}` : null,
+    ].filter(Boolean).join(', ') || 'Not provided';
+
+    const prompt = `You are an evidence-based health advisor interpreting bloodwork results for a user.
+
+## User profile
+${profileSnippet}
+Health goals: ${goals}
+
+## Active supplements / medications
+${supplementLines}
+
+## Latest bloodwork values
+${bloodworkLines}
+
+Return ONLY valid JSON (no markdown) in this exact shape:
+{
+  "interpretations": [
+    {
+      "marker": "string — exact marker name from the data",
+      "latestValue": number,
+      "unit": "string",
+      "status": "above_range" | "below_range" | "in_range",
+      "summary": "1-sentence plain-language explanation of what this value means",
+      "personalised_insight": "1-2 sentences referencing this user's specific goals or supplements",
+      "recommendation": "specific, evidence-based action — dosage and timing where relevant",
+      "supplement_link": ["supplement names already in cabinet or suggested additions"],
+      "priority": "high" | "medium" | "low"
+    }
+  ],
+  "overall_summary": "1-2 sentence overview of the full panel — highlight biggest gaps. End with: Not medical advice."
+}
+
+Rules:
+- Include ALL markers. Even in-range markers should have an entry (status: in_range, priority: low).
+- Personalise every personalised_insight — reference specific supplements, goals, or profile details.
+- supplement_link should list existing cabinet items that address this marker, or suggest additions.
+- priority: high if significantly out of range, medium if borderline, low if in range.
+- Be specific about dosages in recommendations where clinically relevant.
+- Return only valid JSON — no markdown, no explanation outside the JSON.`;
+
+    const aiModel = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await aiModel.generateContent(prompt);
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=bloodwork-interpret`);
+
+    let raw = result.response.text().trim();
+    if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
+
+    const parsed = JSON.parse(raw) as InterpretResponse;
+    parsed.generated_at = new Date().toISOString();
+
+    // Cache the result
+    const content = JSON.stringify(parsed);
+    await InsightCache.findOneAndUpdate(
+      { userId, type: INTERPRET_CACHE_TYPE },
+      { userId, type: INTERPRET_CACHE_TYPE, content, generatedAt: new Date() },
+      { upsert: true, new: true }
+    );
+
+    res.json({ success: true, data: parsed, error: null });
+  } catch (err) {
+    console.error('[POST /bloodwork/interpret]', err);
+    res.status(500).json({ success: false, data: null, error: 'Bloodwork interpretation failed' });
   }
 });
 
