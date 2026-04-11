@@ -7,7 +7,14 @@ import { BloodworkEntry } from '../models/BloodworkEntry';
 import { Conversation } from '../models/Conversation';
 import { HealthProfile } from '../models/HealthProfile';
 import { CabinetItem } from '../models/CabinetItem';
-import { getGenAI, MODELS } from '../utils/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { MODELS } from '../config/models';
+
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 const digestRouter = Router();
 
