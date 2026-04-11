@@ -57,7 +57,7 @@ router.delete('/log-dose/:id', async (req: AuthRequest, res: Response): Promise<
     const userId = req.userId;
     if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
 
-    const { id } = req.params;
+    const id = String(req.params.id);
     if (!Types.ObjectId.isValid(id)) {
       res.status(400).json({ success: false, data: null, error: 'Invalid log id' });
       return;
