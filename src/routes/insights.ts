@@ -50,23 +50,22 @@ router.post('/daily-brief', async (req: AuthRequest, res: Response): Promise<voi
       return;
     }
 
-    // Enforce 24h rate limit on regeneration
-    if (cached && !isFresh === false && forceRefresh) {
-      // cached is fresh and user wants to refresh — deny
+    // Enforce 24h rate limit on forced regeneration
+    if (forceRefresh && cached && isFresh) {
       const ageMs = now - cached.generatedAt.getTime();
-      if (ageMs < BRIEF_TTL_MS) {
-        res.status(429).json({
-          success: false,
-          data: {
-            brief: cached.content,
-            generatedAt: cached.generatedAt.toISOString(),
-            fromCache: true,
-            rateLimited: true,
-          },
-          error: 'Brief was generated less than 24 hours ago. Try again later.',
-        });
-        return;
-      }
+      const retryAfterMs = BRIEF_TTL_MS - ageMs;
+      res.status(429).json({
+        success: false,
+        data: {
+          brief: cached.content,
+          generatedAt: cached.generatedAt.toISOString(),
+          fromCache: true,
+          rateLimited: true,
+          retryAfterMs,
+        },
+        error: 'Brief was generated less than 24 hours ago. Try again later.',
+      });
+      return;
     }
 
     // Gather data
