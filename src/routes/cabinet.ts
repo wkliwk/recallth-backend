@@ -1399,4 +1399,51 @@ Return ONLY valid JSON (no markdown):
   }
 });
 
+
+// POST /cabinet/first-insight — AI welcome insight for a new user's first supplement
+router.post('/first-insight', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const { supplementName, userGoals } = req.body as { supplementName?: unknown; userGoals?: unknown };
+    if (!supplementName || typeof supplementName !== 'string' || !supplementName.trim()) {
+      res.status(400).json({ success: false, data: null, error: 'supplementName is required' });
+      return;
+    }
+
+    const goalsText = Array.isArray(userGoals) && userGoals.length > 0
+      ? `User goals: ${(userGoals as string[]).join(', ')}.`
+      : '';
+
+    const prompt = `You are a concise supplement advisor. ${goalsText}
+Give a first-time user a brief, friendly insight about "${supplementName.trim()}".
+Reply ONLY with valid JSON (no markdown fences):
+{"uses":"<1-2 sentences on what it is commonly used for>","timing":"<1 sentence on best time to take it>","notes":"<1 sentence — most important practical note, e.g. take with food, avoid with caffeine>"}
+Keep each value under 90 characters.`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let data: { uses: string; timing: string; notes: string };
+    try {
+      const parsed = JSON.parse(cleaned) as { uses?: string; timing?: string; notes?: string };
+      if (!parsed.uses || !parsed.timing || !parsed.notes) throw new Error('incomplete');
+      data = { uses: parsed.uses, timing: parsed.timing, notes: parsed.notes };
+    } catch {
+      data = { uses: supplementName.trim(), timing: '', notes: '' };
+    }
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=first-insight`);
+
+    res.json({ success: true, data, error: null });
+  } catch (err) {
+    console.error('[POST /cabinet/first-insight]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to generate insight' });
+  }
+});
+
 export default router;
