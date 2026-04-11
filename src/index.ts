@@ -23,6 +23,7 @@ import { scheduleRouter } from './routes/schedule';
 import { intakeRouter } from './routes/intake';
 import { settingsRouter } from './routes/settings';
 import { goalsRouter } from './routes/goals';
+import digestRouter from './routes/digest';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -54,6 +55,7 @@ app.use('/schedule', scheduleRouter);
 app.use('/intake', intakeRouter);
 app.use('/settings', authenticate, settingsRouter);
 app.use('/goals', goalsRouter);
+app.use('/digest', authenticate, digestRouter);
 
 // Error handling
 app.use(errorHandler);
