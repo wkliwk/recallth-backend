@@ -122,4 +122,104 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 });
 
+/**
+ * PUT /journal/logs/:id
+ * Update mood, energy, and/or notes for an existing log entry (owner only).
+ */
+router.put('/logs/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ success: false, data: null, error: 'Unauthorized' });
+    return;
+  }
+
+  const id = req.params.id as string;
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(400).json({ success: false, data: null, error: 'Invalid entry id' });
+    return;
+  }
+
+  const { mood, energy, notes } = req.body;
+  const updateFields: Partial<{ mood: number; energy: number; notes: string }> = {};
+
+  if (mood !== undefined && mood !== null) {
+    const moodNum = Number(mood);
+    if (!Number.isInteger(moodNum) || moodNum < 1 || moodNum > 5) {
+      res.status(400).json({ success: false, data: null, error: 'mood must be an integer between 1 and 5' });
+      return;
+    }
+    updateFields.mood = moodNum;
+  }
+
+  if (energy !== undefined && energy !== null) {
+    const energyNum = Number(energy);
+    if (!Number.isInteger(energyNum) || energyNum < 1 || energyNum > 5) {
+      res.status(400).json({ success: false, data: null, error: 'energy must be an integer between 1 and 5' });
+      return;
+    }
+    updateFields.energy = energyNum;
+  }
+
+  if (notes !== undefined && notes !== null) {
+    if (typeof notes === 'string' && notes.length > 500) {
+      res.status(400).json({ success: false, data: null, error: 'notes must not exceed 500 characters' });
+      return;
+    }
+    updateFields.notes = String(notes);
+  }
+
+  try {
+    const entry = await DailyLog.findOneAndUpdate(
+      { _id: new Types.ObjectId(id), userId: new Types.ObjectId(userId) },
+      { $set: updateFields },
+      { new: true }
+    );
+
+    if (!entry) {
+      res.status(404).json({ success: false, data: null, error: 'Entry not found' });
+      return;
+    }
+
+    res.json({ success: true, data: entry, error: null });
+  } catch (err) {
+    console.error('[PUT /journal/logs/:id] error:', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to update journal entry' });
+  }
+});
+
+/**
+ * DELETE /journal/logs/:id
+ * Delete a log entry owned by the authenticated user.
+ */
+router.delete('/logs/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ success: false, data: null, error: 'Unauthorized' });
+    return;
+  }
+
+  const id = req.params.id as string;
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(400).json({ success: false, data: null, error: 'Invalid entry id' });
+    return;
+  }
+
+  try {
+    const result = await DailyLog.findOneAndDelete({
+      _id: new Types.ObjectId(id),
+      userId: new Types.ObjectId(userId),
+    });
+
+    if (!result) {
+      res.status(404).json({ success: false, data: null, error: 'Entry not found' });
+      return;
+    }
+
+    res.json({ success: true, data: { deleted: true, id }, error: null });
+  } catch (err) {
+    console.error('[DELETE /journal/logs/:id] error:', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to delete journal entry' });
+  }
+});
+
 export default router;
