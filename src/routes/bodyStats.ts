@@ -96,7 +96,7 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
 // PUT /body-stats/:id — update an entry
 router.put('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     if (!Types.ObjectId.isValid(id)) {
       res.status(400).json({ success: false, error: 'Invalid entry ID' });
       return;
@@ -141,7 +141,7 @@ router.put('/:id', authenticate, async (req: AuthRequest, res: Response) => {
 // DELETE /body-stats/:id — delete an entry
 router.delete('/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     if (!Types.ObjectId.isValid(id)) {
       res.status(400).json({ success: false, error: 'Invalid entry ID' });
       return;
