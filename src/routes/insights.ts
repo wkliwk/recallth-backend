@@ -219,7 +219,7 @@ router.post('/journal-insights', async (req: AuthRequest, res: Response): Promis
     }
 
     // Fetch last 30 days of journal entries
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const [logs, cabinet] = await Promise.all([
       DailyLog.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: 1 }).lean(),
       CabinetItem.find({ userId: userObjectId, active: true }).lean(),
