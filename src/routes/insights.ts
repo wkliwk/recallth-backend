@@ -236,8 +236,7 @@ router.post('/journal-insights', async (req: AuthRequest, res: Response): Promis
       const parts = [`${d}: mood=${l.mood ?? '?'}/5 energy=${l.energy ?? '?'}/5`];
       if (l.notes) parts.push(`notes="${l.notes.slice(0, 80)}"`);
       return parts.join(' ');
-    }).join('
-');
+    }).join('\n');
 
     const cabinetText = cabinet.length > 0
       ? cabinet.map((c) => `${c.name}${c.dosage ? ` ${c.dosage}` : ''}${c.frequency ? ` (${c.frequency})` : ''}`).join(', ')
