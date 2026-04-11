@@ -6,6 +6,8 @@ export interface IBloodworkEntry extends Document {
   marker: string;
   value: number;
   unit: string;
+  refLow?: number;
+  refHigh?: number;
   createdAt: Date;
 }
 
@@ -16,6 +18,8 @@ const BloodworkEntrySchema = new Schema<IBloodworkEntry>(
     marker: { type: String, required: true, trim: true },
     value: { type: Number, required: true },
     unit: { type: String, required: true, trim: true },
+    refLow: { type: Number, default: null },
+    refHigh: { type: Number, default: null },
   },
   { timestamps: true },
 );

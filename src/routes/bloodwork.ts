@@ -21,11 +21,13 @@ const getGenAI = () => {
 // POST /bloodwork — create a new bloodwork entry
 router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const { date, marker, value, unit } = req.body as {
+    const { date, marker, value, unit, refLow, refHigh } = req.body as {
       date: unknown;
       marker: unknown;
       value: unknown;
       unit: unknown;
+      refLow?: unknown;
+      refHigh?: unknown;
     };
 
     if (typeof date !== 'string' || !DATE_REGEX.test(date)) {
@@ -48,12 +50,17 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    const parsedRefLow = typeof refLow === 'number' && Number.isFinite(refLow) ? refLow : undefined;
+    const parsedRefHigh = typeof refHigh === 'number' && Number.isFinite(refHigh) ? refHigh : undefined;
+
     const entry = await BloodworkEntry.create({
       userId: req.userId,
       date,
       marker: marker.trim(),
       value,
       unit: unit.trim(),
+      ...(parsedRefLow !== undefined && { refLow: parsedRefLow }),
+      ...(parsedRefHigh !== undefined && { refHigh: parsedRefHigh }),
     });
 
     res.status(201).json({ success: true, data: entry });
@@ -274,7 +281,12 @@ router.post('/interpret', authenticate, async (req: AuthRequest, res: Response):
         const trend = values.length > 1
           ? (values[values.length - 1] > values[0] ? '↑ trending up' : values[values.length - 1] < values[0] ? '↓ trending down' : '→ stable')
           : '';
-        return `- ${marker}: ${latest.value} ${latest.unit} (measured ${latest.date})${trend ? ' ' + trend : ''}`;
+        const refRange = (latest.refLow != null && latest.refHigh != null)
+          ? ` [user lab reference: ${latest.refLow}–${latest.refHigh} ${latest.unit}]`
+          : (latest.refLow != null ? ` [user lab reference low: ${latest.refLow} ${latest.unit}]`
+          : latest.refHigh != null ? ` [user lab reference high: ${latest.refHigh} ${latest.unit}]`
+          : '');
+        return `- ${marker}: ${latest.value} ${latest.unit} (measured ${latest.date})${trend ? ' ' + trend : ''}${refRange}`;
       })
       .join('\n');
 
@@ -327,6 +339,8 @@ Rules:
 - supplement_link should list existing cabinet items that address this marker, or suggest additions.
 - priority: high if significantly out of range, medium if borderline, low if in range.
 - Be specific about dosages in recommendations where clinically relevant.
+- When a marker has a "[user lab reference: X–Y]" annotation, ALWAYS use those bounds to determine status (above/below/in_range). Mention "Based on your lab's reference range of X–Y" in personalised_insight.
+- When no user range is provided, use standard clinical reference ranges.
 - Return only valid JSON — no markdown, no explanation outside the JSON.`;
 
     const aiModel = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
