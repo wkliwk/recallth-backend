@@ -19,6 +19,7 @@ import exportRouter from './routes/export';
 import journalRouter from './routes/journal';
 import { bloodworkRouter } from './routes/bloodwork';
 import { insightsRouter } from './routes/insights';
+import { scheduleRouter } from './routes/schedule';
 import { intakeRouter } from './routes/intake';
 import { settingsRouter } from './routes/settings';
 import { authenticate } from './middleware/auth';
@@ -48,6 +49,7 @@ app.use('/export', authenticate, exportRouter);
 app.use('/journal', journalRouter);
 app.use('/bloodwork', bloodworkRouter);
 app.use('/insights', insightsRouter);
+app.use('/schedule', scheduleRouter);
 app.use('/intake', intakeRouter);
 app.use('/settings', authenticate, settingsRouter);
 
