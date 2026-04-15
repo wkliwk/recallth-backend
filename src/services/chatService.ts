@@ -452,12 +452,13 @@ export interface ChatResult {
 export async function processChat(
   userId: string,
   userMessage: string,
-  conversationId?: string
+  conversationId?: string,
+  languageOverride?: DetectedLanguage
 ): Promise<ChatResult> {
   const userObjectId = new Types.ObjectId(userId);
 
-  // Detect language from user message
-  const language = detectLanguage(userMessage);
+  // Use UI language override if provided, otherwise detect from message
+  const language = languageOverride ?? detectLanguage(userMessage);
 
   // Load profile, cabinet, journal, and side effects in parallel
   const sevenDaysAgo = new Date();
