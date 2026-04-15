@@ -25,6 +25,7 @@ import { settingsRouter } from './routes/settings';
 import { goalsRouter } from './routes/goals';
 import digestRouter from './routes/digest';
 import bodyStatsRouter from './routes/bodyStats';
+import nutritionRouter from './routes/nutrition';
 import { authenticate } from './middleware/auth';
 
 dotenv.config();
@@ -58,6 +59,7 @@ app.use('/settings', authenticate, settingsRouter);
 app.use('/goals', goalsRouter);
 app.use('/digest', authenticate, digestRouter);
 app.use('/body-stats', authenticate, bodyStatsRouter);
+app.use('/nutrition', authenticate, nutritionRouter);
 
 // Error handling
 app.use(errorHandler);
