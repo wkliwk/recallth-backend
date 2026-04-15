@@ -935,10 +935,10 @@ Return up to 3 matching supplement or health product results as a JSON array. Ea
 - timing: one of "Morning", "Pre-workout", "With meals", "Evening", "Before bed" (string, required)
 - description: 1-2 sentence product description (string, required)
 - ingredients: key active ingredients e.g. "Whey Protein Isolate, Whey Protein Concentrate" (string, required)
-- imageUrl: leave as empty string "" (string, required)
+- imageUrl: a real, publicly accessible product image URL if you know one with confidence (e.g. from the brand's official CDN, iHerb, or a major retailer). If unsure, use "" (string, required)
 
 Return ONLY a valid JSON array, no markdown, no explanation.
-Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides","imageUrl":""}]`;
+Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides","imageUrl":"https://www.optimumnutrition.com/..."}]`;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
