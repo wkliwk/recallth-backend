@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/Nutrition';
+import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
 import { CATEGORY_TARGETS } from '../utils/nutritionTargets';
 
@@ -174,6 +175,177 @@ router.put('/category', async (req: AuthRequest, res: Response): Promise<void> =
   } catch (err) {
     console.error('[PUT /nutrition/category]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to update nutrition category' });
+  }
+});
+
+// ─── Supplement matching heuristic ───────────────────────────────────────
+// Maps nutrient names to keyword sets that identify matching supplements.
+
+const NUTRIENT_KEYWORDS: Record<string, string[]> = {
+  protein: ['protein', 'whey', 'casein'],
+  vitamin_d: ['vitamin d', 'vit d', 'd3'],
+  fat: ['omega', 'fish oil', 'epa', 'dha'],
+  iron: ['iron', 'ferrous'],
+  calcium: ['calcium'],
+  magnesium: ['magnesium', 'mag'],
+  zinc: ['zinc'],
+  folate: ['folate', 'folic', 'b9'],
+  fiber: ['fiber', 'fibre', 'psyllium'],
+};
+
+function supplementFillsGap(supplementName: string, nutrient: string): boolean {
+  const keywords = NUTRIENT_KEYWORDS[nutrient];
+  if (!keywords) return false;
+  const lowerName = supplementName.toLowerCase();
+  return keywords.some((kw) => lowerName.includes(kw));
+}
+
+// Cantonese nutrient display names
+const NUTRIENT_DISPLAY: Record<string, string> = {
+  protein: '蛋白質',
+  calories: '卡路里',
+  carbs: '碳水化合物',
+  fat: '脂肪',
+  sugar: '糖分',
+  fiber: '膳食纖維',
+  sodium: '鈉',
+  potassium: '鉀',
+  phosphorus: '磷',
+  folate: '葉酸',
+  iron: '鐵質',
+  calcium: '鈣質',
+  magnesium: '鎂',
+  zinc: '鋅',
+  vitamin_d: '維他命D',
+};
+
+function nutrientDisplayName(nutrient: string): string {
+  return NUTRIENT_DISPLAY[nutrient] ?? nutrient;
+}
+
+// ─── GET /nutrition/recommendations — supplement gap recommendations ──────
+
+router.get('/recommendations', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { date } = req.query as { date?: string };
+    const targetDate = typeof date === 'string' && DATE_REGEX.test(date) ? date : todayString();
+
+    // Step 1: Aggregate daily nutrients from MealEntry
+    const entries = await MealEntry.find({ userId, date: targetDate }).lean();
+
+    const totals: Record<string, number> = {};
+    for (const entry of entries) {
+      for (const food of entry.foods) {
+        const nutrientsMap = food.nutrients as unknown as Map<string, number> | Record<string, number>;
+        const pairs: [string, number][] =
+          nutrientsMap instanceof Map
+            ? Array.from(nutrientsMap.entries())
+            : Object.entries(nutrientsMap as Record<string, number>);
+        for (const [key, value] of pairs) {
+          totals[key] = (totals[key] ?? 0) + value;
+        }
+      }
+    }
+
+    // Step 2: Load user nutrition category (default: gym)
+    const categoryDoc = await UserNutritionCategory.findOne({ userId }).lean();
+    const category: NutritionCategory = categoryDoc?.category ?? 'gym';
+
+    // Step 3: Load targets and identify gaps
+    const targets = CATEGORY_TARGETS[category];
+
+    interface NutrientGap {
+      nutrient: string;
+      target: number;
+      actual: number;
+      gap: number;
+      unit: string;
+      type: 'min' | 'max';
+    }
+
+    const gaps: NutrientGap[] = [];
+
+    for (const t of targets) {
+      const actual = Math.round((totals[t.nutrient] ?? 0) * 10) / 10;
+      if (t.type === 'min' && actual < t.dailyTarget) {
+        gaps.push({
+          nutrient: t.nutrient,
+          target: t.dailyTarget,
+          actual,
+          gap: Math.round((t.dailyTarget - actual) * 10) / 10,
+          unit: t.unit,
+          type: 'min',
+        });
+      } else if (t.type === 'max' && actual > t.dailyTarget) {
+        gaps.push({
+          nutrient: t.nutrient,
+          target: t.dailyTarget,
+          actual,
+          gap: Math.round((actual - t.dailyTarget) * 10) / 10,
+          unit: t.unit,
+          type: 'max',
+        });
+      }
+    }
+
+    // Step 4: Fetch user's supplement cabinet (active supplements only)
+    const cabinet = await CabinetItem.find({
+      userId,
+      active: true,
+      type: { $in: ['supplement', 'vitamin'] },
+    }).lean();
+
+    // Step 5: Match supplements to gaps and build recommendations
+    interface Recommendation {
+      supplement: { id: string; name: string; dosage: string };
+      reason: string;
+      fillsGap: string;
+    }
+
+    const recommendations: Recommendation[] = [];
+    const filledGaps = new Set<string>();
+
+    for (const gap of gaps) {
+      for (const item of cabinet) {
+        if (supplementFillsGap(item.name, gap.nutrient)) {
+          const displayName = nutrientDisplayName(gap.nutrient);
+          const reason =
+            gap.type === 'min'
+              ? `你今日${displayName}仲差 ${gap.gap}${gap.unit}，${item.name} 可以幫你補返`
+              : `你今日${displayName}已超標 ${gap.gap}${gap.unit}，留意${item.name}唔好再加`;
+
+          recommendations.push({
+            supplement: {
+              id: (item._id as Types.ObjectId).toString(),
+              name: item.name,
+              dosage: item.dosage ?? '',
+            },
+            reason,
+            fillsGap: gap.nutrient,
+          });
+
+          filledGaps.add(gap.nutrient);
+          break; // one supplement per gap
+        }
+      }
+    }
+
+    const allGapsFilled = gaps.length > 0 && gaps.every((g) => filledGaps.has(g.nutrient));
+
+    res.json({
+      success: true,
+      data: {
+        date: targetDate,
+        gaps,
+        recommendations,
+        allGapsFilled,
+      },
+      error: null,
+    });
+  } catch (err) {
+    console.error('[GET /nutrition/recommendations]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to get recommendations' });
   }
 });
 
