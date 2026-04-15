@@ -2,6 +2,8 @@
 
 Express 5 + TypeScript + MongoDB API for the Recallth health advisor app.
 
+📚 **Product docs & architecture:** [github.com/wkliwk/recallth-docs](https://github.com/wkliwk/recallth-docs)
+
 ## Local Development
 
 ```bash
