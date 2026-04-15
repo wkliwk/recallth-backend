@@ -912,6 +912,57 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
   });
 });
 
+// POST /cabinet/ai-lookup — AI product search for supplement/medication info
+router.post('/ai-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { query } = req.body as { query?: string };
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'query is required' });
+      return;
+    }
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a supplement product expert. The user is searching for: "${query.trim()}"
+
+Return up to 3 matching supplement or health product results as a JSON array. Each result must have:
+- name: product name (string, required)
+- brand: brand name (string, required)
+- type: one of "supplement", "vitamin", "medication" (string, required)
+- dosage: typical serving size e.g. "25g", "2 scoops", "1 capsule" (string, required)
+- frequency: one of "Daily", "Twice daily", "As needed" (string, required)
+- timing: one of "Morning", "Pre-workout", "With meals", "Evening", "Before bed" (string, required)
+- description: 1-2 sentence product description (string, required)
+- ingredients: key active ingredients e.g. "Whey Protein Isolate, Whey Protein Concentrate" (string, required)
+- imageUrl: leave as empty string "" (string, required)
+
+Return ONLY a valid JSON array, no markdown, no explanation.
+Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides","imageUrl":""}]`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().trim();
+
+    // Extract JSON array from response
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
+      return;
+    }
+
+    const products = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(products) || products.length === 0) {
+      res.status(404).json({ success: false, data: null, error: 'No products found for that query' });
+      return;
+    }
+
+    res.json({ success: true, data: products.slice(0, 3), error: null });
+  } catch (err) {
+    console.error('[POST /cabinet/ai-lookup]', err);
+    res.status(500).json({ success: false, data: null, error: 'AI lookup failed' });
+  }
+});
+
 // POST /cabinet/stack-builder — AI-recommended supplement stack from health goals
 router.post('/stack-builder', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
