@@ -22,9 +22,10 @@ chatRouter.use(authenticate);
 // POST /chat — send message, get AI response
 chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId as string;
-  const { message, conversationId } = req.body as {
+  const { message, conversationId, language } = req.body as {
     message?: string;
     conversationId?: string;
+    language?: string;
   };
 
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -56,7 +57,9 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const result = await processChat(userId, message.trim(), conversationId);
+  const validLanguages = ['en', 'zh-HK', 'zh-TW'];
+  const languageOverride = language && validLanguages.includes(language) ? language as 'en' | 'zh-HK' | 'zh-TW' : undefined;
+  const result = await processChat(userId, message.trim(), conversationId, languageOverride);
 
   res.status(200).json({
     success: true,
