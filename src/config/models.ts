@@ -1,5 +1,5 @@
 export const MODELS = {
-  CHAT: 'gemini-2.5-flash-lite',
+  CHAT: 'gemini-2.5-flash',
   EXTRACTION: 'gemini-2.5-flash-lite',
   INTERACTION: 'gemini-2.5-flash-lite',
   WELLNESS: 'gemini-2.5-flash-lite',

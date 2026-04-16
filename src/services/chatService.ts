@@ -112,7 +112,16 @@ function buildSystemPrompt(
   const journalContext = buildJournalContext(journalLogs);
   const sideEffectContext = buildSideEffectContext(sideEffects);
 
+  // Time-of-day context for situational awareness
+  const now = new Date();
+  const hour = now.getHours();
+  const timeOfDay = hour < 6 ? 'late night' : hour < 10 ? 'morning' : hour < 12 ? 'late morning' : hour < 14 ? 'around lunchtime' : hour < 17 ? 'afternoon' : hour < 20 ? 'evening' : 'night';
+  const dayOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][now.getDay()];
+
   return `You are Recallth, a personal AI health advisor with perfect memory of this user's health profile.
+
+CURRENT TIME CONTEXT:
+It is currently ${timeOfDay} (${hour}:${String(now.getMinutes()).padStart(2, '0')}) on ${dayOfWeek}. Use this to give time-appropriate advice — e.g. if user says "heading to gym now", recommend pre-workout supplements from their cabinet that should be taken now; if they say "just finished gym", recommend post-workout items and nutrition timing.
 
 USER HEALTH PROFILE:
 ${JSON.stringify(profileData, null, 2)}
@@ -122,6 +131,21 @@ ${JSON.stringify(cabinetData, null, 2)}
 ${journalContext}${sideEffectContext}
 
 ${languageInstruction}
+
+IMAGE ANALYSIS:
+If the user sends an image (e.g. a photo of a supplement bottle, nutrition label, or pill):
+- Identify the product name, brand, active ingredients, and dosage from the label
+- Check if it's already in the user's cabinet (match by name or active ingredient)
+- Flag any interactions with their current stack
+- Suggest optimal timing based on the supplement type and their existing schedule
+- If you cannot read the label clearly, ask the user to provide more details
+
+SITUATIONAL AWARENESS:
+When the user mentions an activity or situation (gym, sleep, meal, travel, illness):
+- Reference their specific cabinet items that are relevant to that situation
+- Give concrete timing advice (e.g. "Take your creatine 30 min before workout")
+- If they're missing supplements that would help, suggest additions
+- Consider their exercise type/goals from their profile when making recommendations
 
 LANGUAGE RULES:
 - Detect the language of the user's message
@@ -138,6 +162,33 @@ INSTRUCTIONS:
 - Be warm, helpful, and direct — like a knowledgeable friend, not a clinical report
 - If asked about something outside health/wellness, politely redirect
 
+ACTION PROMPTS (mandatory when applicable):
+When the user mentions personal data that could be saved to their profile or cabinet, you MUST proactively suggest saving it. Use a clear, conversational prompt. Examples:
+
+1. BODY STATS: If user mentions height, weight, age, or sex that is NOT already in their profile → ask if they want to record it.
+   - EN: "I noticed you mentioned you're 173cm / 62kg — would you like me to save this to your health profile?"
+   - ZH: "我留意到你提到你 173cm / 62kg — 要唔要我幫你記錄低喺健康檔案度？"
+
+2. EXERCISE HABITS: If user mentions workout routines, gym frequency, exercise type not yet in profile → suggest recording it.
+   - EN: "Sounds like you work out 5-6 times a week — want me to update your exercise profile?"
+   - ZH: "聽落你一個禮拜做5-6次gym — 要唔要我記錄低你嘅運動習慣？"
+
+3. SUPPLEMENTS/MEDICATIONS: If user mentions taking something (protein powder, vitamins, etc.) that is NOT in their cabinet → suggest adding it.
+   - EN: "You mentioned protein powder — want me to add it to your supplement cabinet?"
+   - ZH: "你有提到飲蛋白粉 — 要唔要我加入去你嘅藥箱？"
+
+4. GOALS & PLANS: If the user has a clear fitness/health goal (e.g. muscle gain, weight loss) → suggest creating a strategy or plan.
+   - EN: "Since you're focused on muscle gain, would you like me to help design a supplement + nutrition strategy?"
+   - ZH: "既然你想增肌增重，要唔要我幫你制定一個補充品同營養策略？"
+
+Rules for action prompts:
+- Compare what the user said against their EXISTING profile/cabinet data above — only prompt for NEW info not already saved
+- Place action prompts in a clearly separated section at the end (before the disclaimer), using bullet points or numbered list
+- Use a header: "📋 Quick actions:" (EN) / "📋 快捷操作：" (ZH)
+- Keep each prompt to one line with a clear yes/no question
+- Include 1-4 action prompts per response, only when genuinely applicable
+- Do NOT prompt for data that is already in the user's profile or cabinet
+
 PROACTIVE INSIGHTS (optional — do this roughly 1 in every 3 responses):
 - After answering the user's question, you MAY add a brief proactive insight on a new line
 - The insight should be something the user hasn't asked about but that you notice from their profile or cabinet
@@ -150,6 +201,22 @@ DISCLAIMER (append to every response in the correct language on a new line):
 - English: "⚠️ This is not medical advice. Consult a healthcare professional for medical decisions."
 - 廣東話: "⚠️ 以上內容並非醫療建議。如有醫療需要，請諮詢專業醫護人員。"
 - 繁體中文: "⚠️ 以上內容僅供參考，並非醫療建議。請諮詢專業醫療人員。"
+
+ACTION ITEMS (mandatory when applicable):
+If you detected any data from the user that could be saved (body stats, exercise habits, supplements, goals), output an actions JSON block BEFORE the disclaimer. Each action has a type, label (in the user's language), and data to save.
+
+Format — output EXACTLY this JSON (no markdown, no extra text around it):
+{"actions":[{"type":"save_profile","label":"...","data":{"field":"value"}},{"type":"add_cabinet","label":"...","data":{"name":"...","type":"supplement"}}]}
+
+Action types:
+- "save_profile": saves to health profile. data keys use dot notation: "body.height", "body.weight", "body.age", "body.sex", "exercise.frequency", "exercise.type", "exercise.goals", "goals.primary" (array), "diet.dietType", "sleep.quality", etc.
+- "add_cabinet": adds supplement to cabinet. data must have "name" and "type" ("supplement"|"medication"|"vitamin"), optionally "dosage", "frequency", "timing", "brand".
+
+Rules:
+- Only include actions for NEW data not already in the user's profile/cabinet above
+- Label should be short and descriptive in the user's language (e.g. "記錄身高體重 (173cm, 62kg)")
+- If no actions are applicable, omit the actions JSON block entirely
+- Do NOT include the "📋 快捷操作：" text section anymore — the actions JSON replaces it
 
 FOLLOW-UP SUGGESTIONS (mandatory):
 After the disclaimer, on a new line, append EXACTLY this JSON block with 1–3 short follow-up questions the user might naturally ask next (under 10 words each, in the same language as your response):
@@ -387,6 +454,43 @@ async function generateTitleAndSummary(
   }
 }
 
+// --- Parse actions JSON block from AI response ---
+interface ChatAction {
+  type: 'save_profile' | 'add_cabinet';
+  label: string;
+  data: Record<string, unknown>;
+}
+
+function parseActions(content: string): { clean: string; actions: ChatAction[] } {
+  const marker = '{"actions"';
+  const startIdx = content.indexOf(marker);
+  if (startIdx === -1) return { clean: content, actions: [] };
+
+  // Find the matching closing brace by counting brackets
+  let depth = 0;
+  let endIdx = -1;
+  for (let i = startIdx; i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    else if (content[i] === '}') {
+      depth--;
+      if (depth === 0) { endIdx = i + 1; break; }
+    }
+  }
+  if (endIdx === -1) return { clean: content, actions: [] };
+
+  const jsonStr = content.slice(startIdx, endIdx);
+  try {
+    const parsed = JSON.parse(jsonStr) as { actions: unknown[] };
+    const actions = (parsed.actions as ChatAction[])
+      .filter((a) => a.type && a.label && a.data)
+      .slice(0, 4);
+    const clean = content.slice(0, startIdx).trimEnd();
+    return { clean, actions };
+  } catch {
+    return { clean: content, actions: [] };
+  }
+}
+
 // --- Parse suggestions JSON block from AI response ---
 const SUGGESTIONS_REGEX = /\{"suggestions"\s*:\s*\[.*?\]\}/s;
 
@@ -447,13 +551,16 @@ export interface ChatResult {
   extractedData: FrontendExtractedData | null;
   detectedLanguage: DetectedLanguage;
   suggestions: string[];
+  actions: ChatAction[];
 }
 
 export async function processChat(
   userId: string,
   userMessage: string,
   conversationId?: string,
-  languageOverride?: DetectedLanguage
+  languageOverride?: DetectedLanguage,
+  imageBase64?: string,
+  imageMimeType?: string
 ): Promise<ChatResult> {
   const userObjectId = new Types.ObjectId(userId);
 
@@ -515,7 +622,18 @@ export async function processChat(
   });
 
   const chat = model.startChat({ history });
-  const chatResult = await chat.sendMessage(userMessage);
+
+  // Build message parts — text + optional image
+  const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
+    { text: userMessage },
+  ];
+  if (imageBase64 && imageMimeType) {
+    messageParts.push({
+      inlineData: { data: imageBase64, mimeType: imageMimeType },
+    });
+  }
+
+  const chatResult = await chat.sendMessage(messageParts);
   const rawContent = chatResult.response.text();
 
   const usage = chatResult.response.usageMetadata;
@@ -523,12 +641,14 @@ export async function processChat(
     `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=chat`
   );
 
-  const { clean: assistantContent, suggestions } = parseSuggestions(rawContent);
+  const { clean: withoutActions, actions } = parseActions(rawContent);
+  const { clean: assistantContent, suggestions } = parseSuggestions(withoutActions);
 
   const assistantMsg = {
     role: 'assistant' as const,
     content: assistantContent,
     timestamp: new Date(),
+    ...(actions.length > 0 ? { actions: actions.map((a) => ({ ...a, applied: false })) } : {}),
   };
   conversation.messages.push(assistantMsg);
   await conversation.save();
@@ -538,15 +658,17 @@ export async function processChat(
     void generateTitleAndSummary(String(conversation._id), userMessage);
   }
 
-  // Run extraction in parallel (non-blocking on response, but we await to include in response)
+  // Run extraction in background (non-blocking) — data is NOT auto-applied,
+  // it's returned as extractedData for reference. The user approves via action buttons.
   let extractedData: ExtractionResult | null = null;
   try {
     extractedData = await extractHealthData(userMessage);
-    if (extractedData) {
+    // Only auto-apply if there are NO actions (i.e. AI didn't surface them as buttons).
+    // When actions are present, the user will click to approve.
+    if (extractedData && actions.length === 0) {
       await applyExtractedData(userObjectId, extractedData);
     }
   } catch (err) {
-    // Extraction failure should not break the chat response
     console.error('[Chat] Extraction error:', err);
   }
 
@@ -556,5 +678,6 @@ export async function processChat(
     extractedData: toFrontendExtraction(extractedData),
     detectedLanguage: language,
     suggestions,
+    actions,
   };
 }

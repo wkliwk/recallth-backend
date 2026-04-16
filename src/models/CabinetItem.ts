@@ -13,6 +13,7 @@ export interface IResearchNotes {
 export interface ICabinetItem extends Document {
   userId: Types.ObjectId;
   name: string;
+  nameZh?: string;
   type: CabinetItemType;
   dosage?: string;
   frequency?: string;
@@ -25,6 +26,9 @@ export interface ICabinetItem extends Document {
   source: CabinetItemSource;
   price?: number;
   currency?: string;
+  description?: string;
+  ingredients?: string;
+  imageUrl?: string;
   researchNotes?: IResearchNotes;
   quantityRemaining?: number;
   dailyDoseCount?: number;
@@ -44,6 +48,10 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
     name: {
       type: String,
       required: true,
+      trim: true,
+    },
+    nameZh: {
+      type: String,
       trim: true,
     },
     type: {
@@ -95,6 +103,18 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
       type: String,
       trim: true,
       default: 'HKD',
+    },
+    description: {
+      type: String,
+      trim: true,
+    },
+    ingredients: {
+      type: String,
+      trim: true,
+    },
+    imageUrl: {
+      type: String,
+      trim: true,
     },
     researchNotes: {
       type: new Schema(

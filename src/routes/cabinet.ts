@@ -62,6 +62,29 @@ function bustRedundancyCache(userId: string) {
   redundancyCache.delete(userId);
 }
 
+// ─── Chinese name translation helper ─────────────────────────────────────────
+
+async function translateSupplementName(itemId: string, name: string): Promise<void> {
+  try {
+    const prompt = `Translate this supplement/medication name to Traditional Chinese (繁體中文). Return ONLY the Chinese name, nothing else. If it's already Chinese, return it as-is. Keep it short (1-4 characters preferred).
+
+Name: ${name}
+
+Examples: Creatine → 肌酸, Omega-3 → 魚油, Vitamin D → 維他命D, Magnesium → 鎂, Zinc → 鋅, Ashwagandha → 南非醉茄, Probiotics → 益生菌`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
+    const result = await model.generateContent(prompt);
+    const nameZh = result.response.text().trim();
+
+    if (nameZh && nameZh !== name) {
+      await CabinetItem.findByIdAndUpdate(itemId, { nameZh });
+      console.log(`[AI] translated "${name}" → "${nameZh}" for item ${itemId}`);
+    }
+  } catch (err) {
+    console.error(`[AI] name translation failed for ${name}:`, err);
+  }
+}
+
 // ─── Research notes helper ────────────────────────────────────────────────────
 
 async function generateResearchNotes(itemId: string, name: string, type: string): Promise<void> {
@@ -75,7 +98,9 @@ Return ONLY valid JSON (no markdown fences):
 {
   "summary": string,       // 2-3 sentences: what it does, key benefits
   "commonDosage": string,  // e.g. "500–1000mg daily with meals"
-  "cautions": string       // e.g. "Avoid if on blood thinners. Consult a doctor if pregnant."
+  "cautions": string,      // e.g. "Avoid if on blood thinners. Consult a doctor if pregnant."
+  "description": string,   // 1-2 sentences: what this product/compound is (e.g. "A naturally occurring amino acid derivative...")
+  "ingredients": string    // comma-separated list of key active ingredients (e.g. "Creatine Monohydrate, Magnesium Stearate")
 }
 
 Important: Include a note that this is general information, not personalised medical advice.`;
@@ -90,16 +115,22 @@ Important: Include a note that this is general information, not personalised med
       summary: string;
       commonDosage: string;
       cautions: string;
+      description?: string;
+      ingredients?: string;
     };
 
-    await CabinetItem.findByIdAndUpdate(itemId, {
+    const updateFields: Record<string, unknown> = {
       researchNotes: {
         summary: parsed.summary,
         commonDosage: parsed.commonDosage,
         cautions: parsed.cautions,
         generatedAt: new Date(),
       },
-    });
+    };
+    if (parsed.description) updateFields.description = parsed.description;
+    if (parsed.ingredients) updateFields.ingredients = parsed.ingredients;
+
+    await CabinetItem.findByIdAndUpdate(itemId, updateFields);
 
     console.log(`[AI] research notes generated for item ${itemId} (${name})`);
   } catch (err) {
@@ -156,8 +187,10 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   bustEvidenceCache(String(req.userId));
   bustRedundancyCache(String(req.userId));
 
-  // Fire-and-forget research notes generation (non-blocking)
-  void generateResearchNotes((item._id as Types.ObjectId).toString(), item.name, item.type);
+  // Fire-and-forget: research notes + Chinese name translation (non-blocking)
+  const itemIdStr = (item._id as Types.ObjectId).toString();
+  void generateResearchNotes(itemIdStr, item.name, item.type);
+  void translateSupplementName(itemIdStr, item.name);
 });
 
 // GET /cabinet — list user's items with optional filters
@@ -231,7 +264,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
@@ -271,9 +304,10 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     error: null,
   });
 
-  // Regenerate research notes if name changed (fire-and-forget)
+  // Regenerate research notes + translation if name changed (fire-and-forget)
   if (nameChanged) {
     void generateResearchNotes(id, updated!.name, updated!.type);
+    void translateSupplementName(id, updated!.name);
   }
 });
 
@@ -394,6 +428,142 @@ router.get('/budget-summary', async (req: AuthRequest, res: Response): Promise<v
       items: priced.map((i) => ({ name: i.name, price: i.price, currency: i.currency ?? 'HKD' })),
     },
   });
+});
+
+// POST /cabinet/ai-lookup — AI-powered product search and auto-fill
+router.post('/ai-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { query } = req.body as { query?: string };
+
+  if (!query || typeof query !== 'string' || query.trim().length < 2) {
+    res.status(400).json({ success: false, data: null, error: 'query is required (min 2 chars)' });
+    return;
+  }
+
+  try {
+    const prompt = `You are a supplement and nutrition product expert. The user is searching for this product:
+
+"${query.trim()}"
+
+Return 3 product results that best match the query. Include the exact product if recognised, plus similar alternatives (different brands, sizes, or flavours).
+
+Return ONLY a valid JSON array (no markdown fences):
+[
+  {
+    "name": string,           // product name in English (e.g. "Whey Gold")
+    "nameZh": string | null,  // product name in Traditional Chinese if applicable
+    "brand": string | null,    // brand name (e.g. "PVL", "ON", "NOW Foods")
+    "type": "supplement" | "medication" | "vitamin",
+    "dosage": string | null,   // recommended serving size (e.g. "1 scoop (33g)", "2 capsules")
+    "frequency": string | null, // recommended frequency (e.g. "Daily", "Post-workout")
+    "timing": string | null,    // best time to take (e.g. "Post-workout", "Morning", "With meals")
+    "description": string,      // 1-2 sentences describing the product
+    "ingredients": string,       // key active ingredients, comma-separated
+    "notes": string | null,     // any important notes (allergens, flavour variants, etc.)
+    "imageUrl": string | null
+  }
+]
+
+Rules:
+- First result should be the closest match to the query
+- Be specific — if user mentions a flavour, include it
+- For dosage, use the standard recommended serving from the product label
+- ingredients should list the main active compounds, not all inactive fillers
+- For imageUrl: return null (images will be resolved separately)
+- Return exactly 3 results`;
+
+    const model = getGenAI().getGenerativeModel({
+      model: MODELS.CHAT,
+      tools: [{ googleSearch: {} } as any],
+    });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=ai-lookup`
+    );
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let products: Record<string, unknown>[];
+    try {
+      const parsed = JSON.parse(cleaned);
+      products = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse product info' });
+      return;
+    }
+
+    // Resolve images from grounding metadata (shared across all results)
+    const groundingMeta = (result.response.candidates?.[0] as any)?.groundingMetadata;
+    const chunks: { web?: { uri?: string } }[] = groundingMeta?.groundingChunks || [];
+    const redirectUrls = chunks
+      .map((c) => c.web?.uri)
+      .filter((u): u is string => !!u && u.startsWith('http'))
+      .slice(0, 4);
+
+    // Scrape og:image from grounding source pages (cache results)
+    const scrapedImages: string[] = [];
+    for (const redirectUrl of redirectUrls) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        const pageRes = await fetch(redirectUrl, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'text/html',
+          },
+          redirect: 'follow',
+        });
+        clearTimeout(timer);
+        if (!pageRes.ok) continue;
+        const html = await pageRes.text();
+
+        let candidateUrl: string | null = null;
+        const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+          || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+        if (ogMatch?.[1]) candidateUrl = ogMatch[1];
+        if (!candidateUrl) {
+          const twMatch = html.match(/<meta[^>]+(?:name|property)=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
+          if (twMatch?.[1]) candidateUrl = twMatch[1];
+        }
+        if (!candidateUrl) {
+          const ldMatch = html.match(/"image"\s*:\s*"(https?:\/\/[^"]+\.(?:jpg|png|webp)[^"]*)"/i);
+          if (ldMatch?.[1]) candidateUrl = ldMatch[1];
+        }
+        if (!candidateUrl) continue;
+        if (candidateUrl.startsWith('//')) candidateUrl = `https:${candidateUrl}`;
+        candidateUrl = candidateUrl.replace(/^http:\/\//, 'https://');
+
+        // Validate
+        const ctrl2 = new AbortController();
+        const timer2 = setTimeout(() => ctrl2.abort(), 3000);
+        const headRes = await fetch(candidateUrl, { method: 'HEAD', signal: ctrl2.signal, headers: { 'User-Agent': 'Mozilla/5.0' }, redirect: 'follow' });
+        clearTimeout(timer2);
+        const ct = headRes.headers.get('content-type') || '';
+        if (headRes.ok && ct.startsWith('image/')) {
+          scrapedImages.push(candidateUrl);
+          console.log(`[AI-Lookup] scraped image: ${candidateUrl}`);
+        }
+      } catch { /* skip */ }
+    }
+
+    // Assign scraped images to products that lack one
+    let imgIdx = 0;
+    for (const p of products) {
+      // Clear any AI-hallucinated URLs
+      p.imageUrl = null;
+      if (imgIdx < scrapedImages.length) {
+        p.imageUrl = scrapedImages[imgIdx++];
+      }
+    }
+
+    res.json({ success: true, error: null, data: products });
+  } catch (err) {
+    console.error('[POST /cabinet/ai-lookup]', err);
+    res.status(500).json({ success: false, data: null, error: 'Product lookup failed' });
+  }
 });
 
 // POST /cabinet/scan — OCR a supplement bottle label via Gemini Vision

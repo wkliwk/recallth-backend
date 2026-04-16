@@ -22,10 +22,12 @@ chatRouter.use(authenticate);
 // POST /chat — send message, get AI response
 chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId as string;
-  const { message, conversationId, language } = req.body as {
+  const { message, conversationId, language, image, imageMimeType } = req.body as {
     message?: string;
     conversationId?: string;
     language?: string;
+    image?: string;        // base64-encoded image data
+    imageMimeType?: string; // e.g. 'image/jpeg', 'image/png'
   };
 
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -59,7 +61,19 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
 
   const validLanguages = ['en', 'zh-HK', 'zh-TW'];
   const languageOverride = language && validLanguages.includes(language) ? language as 'en' | 'zh-HK' | 'zh-TW' : undefined;
-  const result = await processChat(userId, message.trim(), conversationId, languageOverride);
+
+  // Validate image if provided
+  const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+  const hasImage = image && imageMimeType && validImageTypes.includes(imageMimeType);
+
+  const result = await processChat(
+    userId,
+    message.trim(),
+    conversationId,
+    languageOverride,
+    hasImage ? image : undefined,
+    hasImage ? imageMimeType : undefined
+  );
 
   res.status(200).json({
     success: true,
@@ -70,6 +84,7 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
       extractedData: result.extractedData,
       detectedLanguage: result.detectedLanguage,
       suggestions: result.suggestions,
+      actions: result.actions,
     },
   });
 });
@@ -133,6 +148,127 @@ chatRouter.get('/:conversationId', async (req: AuthRequest, res: Response): Prom
     error: null,
     data: conversation,
   });
+});
+
+// DELETE /chat/:conversationId — delete a conversation
+chatRouter.delete('/:conversationId', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId as string;
+  const conversationId = String(req.params.conversationId);
+
+  if (!Types.ObjectId.isValid(conversationId)) {
+    res.status(400).json({ success: false, error: 'invalid conversationId', data: null });
+    return;
+  }
+
+  const result = await Conversation.deleteOne({
+    _id: new Types.ObjectId(conversationId),
+    userId: new Types.ObjectId(userId),
+  });
+
+  if (result.deletedCount === 0) {
+    res.status(404).json({ success: false, error: 'Conversation not found', data: null });
+    return;
+  }
+
+  res.status(200).json({ success: true, error: null, data: null });
+});
+
+// POST /chat/apply-action — apply a user-approved action from chat
+chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId as string;
+  const userObjectId = new Types.ObjectId(userId);
+  const { type, data, conversationId, messageIndex, actionIndex } = req.body as {
+    type?: string;
+    data?: Record<string, unknown>;
+    conversationId?: string;
+    messageIndex?: number;
+    actionIndex?: number;
+  };
+
+  if (!type || !data) {
+    res.status(400).json({ success: false, error: 'type and data are required', data: null });
+    return;
+  }
+
+  try {
+    if (type === 'save_profile') {
+      // Build $set from dot-notation keys, sanitizing numeric fields
+      const numericFields = new Set(['body.height', 'body.weight', 'body.age']);
+      const profileSet: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (value !== null && value !== undefined) {
+          if (numericFields.has(key) && typeof value === 'string') {
+            const num = parseFloat(value.replace(/[^0-9.]/g, ''));
+            if (!isNaN(num)) profileSet[key] = num;
+          } else {
+            profileSet[key] = value;
+          }
+        }
+      }
+      if (Object.keys(profileSet).length > 0) {
+        await HealthProfile.findOneAndUpdate(
+          { userId: userObjectId },
+          { $set: profileSet },
+          { upsert: true, new: true }
+        );
+      }
+      // Mark action as applied in conversation
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'profile', fields: Object.keys(profileSet) } });
+    } else if (type === 'add_cabinet') {
+      const name = data.name as string;
+      if (!name) {
+        res.status(400).json({ success: false, error: 'name is required for add_cabinet', data: null });
+        return;
+      }
+      // Check if already exists
+      const existing = await CabinetItem.findOne({
+        userId: userObjectId,
+        name: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        active: true,
+      });
+      if (existing) {
+        // Still mark as applied
+        if (conversationId && messageIndex != null && actionIndex != null) {
+          await Conversation.updateOne(
+            { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+            { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+          );
+        }
+        res.json({ success: true, error: null, data: { applied: 'cabinet', action: 'already_exists', itemId: String(existing._id) } });
+        return;
+      }
+      const item = await CabinetItem.create({
+        userId: userObjectId,
+        name,
+        type: (data.type as string) || 'supplement',
+        dosage: (data.dosage as string) || undefined,
+        frequency: (data.frequency as string) || undefined,
+        timing: (data.timing as string) || undefined,
+        brand: (data.brand as string) || undefined,
+        source: 'ai_extracted',
+        active: true,
+      });
+      // Mark action as applied in conversation
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'cabinet', action: 'created', itemId: String(item._id) } });
+    } else {
+      res.status(400).json({ success: false, error: `Unknown action type: ${type}`, data: null });
+    }
+  } catch (err) {
+    console.error('[POST /chat/apply-action]', err);
+    res.status(500).json({ success: false, error: 'Failed to apply action', data: null });
+  }
 });
 
 // ─── GET /chat/meal-suggestions ──────────────────────────────────────────────
