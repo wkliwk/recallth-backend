@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/Nutrition';
 import { CabinetItem } from '../models/CabinetItem';
+import { UserFoodItem } from '../models/UserFoodItem';
 import { MODELS } from '../config/models';
 import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } from '../utils/nutritionTargets';
 import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
@@ -110,7 +111,7 @@ interface FoodProduct {
   name: string;
   brand: string;
   servingSize: string;
-  source: 'database' | 'ai';
+  source: 'database' | 'ai' | 'library';
   calories: number | null;
   protein: number | null;
   carbs: number | null;
@@ -139,10 +140,11 @@ function roundOrNull(value: number | undefined): number | null {
   return Math.round(value * 10) / 10;
 }
 
-// ─── GET /nutrition/search — AI-powered food lookup ──────────────────────
+// ─── GET /nutrition/search — library-first, AI fallback ─────────────────
 
 router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.userId as string;
     const { q } = req.query as { q?: string };
 
     if (typeof q !== 'string' || q.trim().length === 0) {
@@ -150,6 +152,37 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
+    // ── 1. Check personal library first ──────────────────────────────
+    const normalized = q.trim().toLowerCase();
+    const libraryItems = await UserFoodItem.find({
+      userId,
+      name: { $regex: normalized, $options: 'i' },
+    })
+      .sort({ useCount: -1, lastUsedAt: -1 })
+      .limit(5)
+      .lean();
+
+    if (libraryItems.length > 0) {
+      const products: FoodProduct[] = libraryItems.map((item) => ({
+        id: (item._id as Types.ObjectId).toString(),
+        name: item.displayName,
+        brand: item.brand,
+        servingSize: item.servingSize,
+        source: 'library' as const,
+        calories: item.calories,
+        protein: item.protein,
+        carbs: item.carbs,
+        fat: item.fat,
+        sugar: item.sugar,
+        fiber: item.fiber,
+        sodium: item.sodium,
+        imageUrl: null,
+      }));
+      res.json({ success: true, data: { products, source: 'library' }, error: null });
+      return;
+    }
+
+    // ── 2. Fall back to AI ────────────────────────────────────────────
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
@@ -611,6 +644,137 @@ router.get('/days', async (req: AuthRequest, res: Response): Promise<void> => {
   } catch (err) {
     console.error('[GET /nutrition/days]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to get days with entries' });
+  }
+});
+
+// ─── GET /nutrition/library/search — search personal food library ─────────
+// Must be defined before GET /nutrition/library and /:id to avoid conflicts
+
+router.get('/library/search', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { q } = req.query as { q?: string };
+
+    if (typeof q !== 'string' || q.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'q is required' });
+      return;
+    }
+
+    const normalized = q.trim().toLowerCase();
+    const items = await UserFoodItem.find({
+      userId,
+      name: { $regex: normalized, $options: 'i' },
+    })
+      .sort({ useCount: -1, lastUsedAt: -1 })
+      .limit(10)
+      .lean();
+
+    res.json({ success: true, data: { items }, error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/library/search]', err);
+    res.status(500).json({ success: false, data: null, error: 'Library search failed' });
+  }
+});
+
+// ─── GET /nutrition/library — list all personal food library items ─────────
+
+router.get('/library', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const items = await UserFoodItem.find({ userId })
+      .sort({ useCount: -1, lastUsedAt: -1 })
+      .lean();
+
+    res.json({ success: true, data: { items }, error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/library]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to get library' });
+  }
+});
+
+// ─── POST /nutrition/library — save food to personal library ─────────────
+
+router.post('/library', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { name, brand, servingSize, calories, protein, carbs, fat, sugar, fiber, sodium } = req.body as {
+      name?: unknown;
+      brand?: unknown;
+      servingSize?: unknown;
+      calories?: unknown;
+      protein?: unknown;
+      carbs?: unknown;
+      fat?: unknown;
+      sugar?: unknown;
+      fiber?: unknown;
+      sodium?: unknown;
+    };
+
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'name is required' });
+      return;
+    }
+
+    const displayName = name.trim();
+    const normalizedName = displayName.toLowerCase();
+
+    // Upsert: if same normalised name exists, update nutrition data and increment useCount
+    const item = await UserFoodItem.findOneAndUpdate(
+      { userId, name: normalizedName },
+      {
+        $set: {
+          displayName,
+          brand: typeof brand === 'string' ? brand.trim() : '',
+          servingSize: typeof servingSize === 'string' ? servingSize.trim() : '',
+          calories: typeof calories === 'number' ? calories : null,
+          protein: typeof protein === 'number' ? protein : null,
+          carbs: typeof carbs === 'number' ? carbs : null,
+          fat: typeof fat === 'number' ? fat : null,
+          sugar: typeof sugar === 'number' ? sugar : null,
+          fiber: typeof fiber === 'number' ? fiber : null,
+          sodium: typeof sodium === 'number' ? sodium : null,
+          lastUsedAt: new Date(),
+        },
+        $inc: { useCount: 1 },
+      },
+      { upsert: true, new: true }
+    );
+
+    res.status(201).json({ success: true, data: item, error: null });
+  } catch (err) {
+    console.error('[POST /nutrition/library]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to save to library' });
+  }
+});
+
+// ─── DELETE /nutrition/library/:id — remove food from personal library ────
+
+router.delete('/library/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const id = req.params.id as string;
+
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ success: false, data: null, error: 'Invalid id' });
+      return;
+    }
+
+    const item = await UserFoodItem.findById(id);
+    if (!item) {
+      res.status(404).json({ success: false, data: null, error: 'Not found' });
+      return;
+    }
+
+    if (item.userId.toString() !== userId) {
+      res.status(403).json({ success: false, data: null, error: 'Forbidden' });
+      return;
+    }
+
+    await UserFoodItem.findByIdAndDelete(id);
+    res.json({ success: true, data: { success: true }, error: null });
+  } catch (err) {
+    console.error('[DELETE /nutrition/library/:id]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to delete from library' });
   }
 });
 
