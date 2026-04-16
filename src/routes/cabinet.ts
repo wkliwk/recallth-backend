@@ -912,6 +912,32 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
   });
 });
 
+// ─── Image URL validation ──────────────────────────────────────────────────────
+// Returns true if the URL looks like an actual image file (not a webpage)
+function isImageUrl(url: string): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    // Must be https
+    if (u.protocol !== 'https:') return false;
+    // Ends in a known image extension
+    if (/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i.test(u.pathname)) return true;
+    // Known image CDN hostnames
+    const host = u.hostname;
+    if (
+      host === 'm.media-amazon.com' ||
+      host === 'images-na.ssl-images-amazon.com' ||
+      host === 'images.iherb.com' ||
+      host === 'images.openfoodfacts.org' ||
+      host.endsWith('.cloudinary.com') ||
+      host.endsWith('.shopify.com') && u.pathname.includes('/products/')
+    ) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Open Food Facts image lookup ─────────────────────────────────────────────
 async function fetchOffImage(name: string, brand: string): Promise<string> {
   try {
@@ -952,9 +978,10 @@ Return up to 3 matching supplement or health product results as a JSON array. Ea
 - timing: one of "Morning", "Pre-workout", "With meals", "Evening", "Before bed" (string, required)
 - description: 1-2 sentence product description (string, required)
 - ingredients: key active ingredients e.g. "Whey Protein Isolate, Whey Protein Concentrate" (string, required)
+- imageUrl: a direct image file URL ending in .jpg/.png/.webp from a CDN (e.g. Amazon, iHerb). Must be a direct image file, NOT a product webpage URL. Use "" if unsure. (string, required)
 
 Return ONLY a valid JSON array, no markdown, no explanation.
-Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides"}]`;
+Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides","imageUrl":""}]`;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
@@ -972,12 +999,17 @@ Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"
       return;
     }
 
-    // Enrich with real product images from Open Food Facts (parallel, 3s timeout each)
+    // For each product: use AI imageUrl if it's a real image file URL,
+    // otherwise fall back to Open Food Facts lookup, otherwise ""
     const top3 = products.slice(0, 3) as Array<Record<string, unknown>>;
-    const imageUrls = await Promise.all(
-      top3.map((p) => fetchOffImage(String(p.name ?? ''), String(p.brand ?? '')))
+    const enriched = await Promise.all(
+      top3.map(async (p) => {
+        const aiUrl = String(p.imageUrl ?? '');
+        if (isImageUrl(aiUrl)) return { ...p, imageUrl: aiUrl };
+        const offUrl = await fetchOffImage(String(p.name ?? ''), String(p.brand ?? ''));
+        return { ...p, imageUrl: offUrl };
+      })
     );
-    const enriched = top3.map((p, i) => ({ ...p, imageUrl: imageUrls[i] }));
     res.json({ success: true, data: enriched, error: null });
   } catch (err) {
     console.error('[POST /cabinet/ai-lookup]', err);
