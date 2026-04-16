@@ -105,19 +105,25 @@ Example for a non-set item:
   }
 });
 
-// ─── Open Food Facts types ────────────────────────────────────────────────
+// ─── USDA FoodData Central types ─────────────────────────────────────────
 
-interface OFFProduct {
-  code?: string;
-  product_name?: string;
-  brands?: string;
-  serving_size?: string;
-  image_url?: string;
-  nutriments?: Record<string, number>;
+interface USDAFoodNutrient {
+  nutrientName?: string;
+  unitName?: string;
+  value?: number;
 }
 
-interface OFFResponse {
-  products?: OFFProduct[];
+interface USDAFood {
+  fdcId?: number;
+  description?: string;
+  brandOwner?: string;
+  servingSize?: number;
+  servingSizeUnit?: string;
+  foodNutrients?: USDAFoodNutrient[];
+}
+
+interface USDAResponse {
+  foods?: USDAFood[];
 }
 
 interface FoodProduct {
@@ -154,20 +160,13 @@ function roundOrNull(value: number | undefined): number | null {
   return Math.round(value * 10) / 10;
 }
 
-function pickNutrient(
-  nutriments: Record<string, number> | undefined,
-  servingKey: string,
-  per100Key: string
-): number | null {
-  if (!nutriments) return null;
-  const serving = nutriments[servingKey];
-  if (serving !== undefined) return roundOrNull(serving);
-  const per100 = nutriments[per100Key];
-  if (per100 !== undefined) return roundOrNull(per100);
-  return null;
+function findNutrient(nutrients: USDAFoodNutrient[] | undefined, name: string): number | null {
+  if (!nutrients) return null;
+  const match = nutrients.find((n) => n.nutrientName?.toLowerCase().includes(name.toLowerCase()));
+  return match?.value !== undefined ? roundOrNull(match.value) : null;
 }
 
-// ─── GET /nutrition/search — Open Food Facts product search ───────────────
+// ─── GET /nutrition/search — USDA FoodData Central product search ──────────
 
 router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -178,57 +177,59 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
-    const OFF_URL =
-      `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q.trim())}` +
-      `&search_simple=1&action=process&json=1&page_size=10` +
-      `&fields=product_name,brands,serving_size,nutriments,image_url`;
-
-    let offData: OFFResponse = {};
-
-    try {
-      const offRes = await fetch(OFF_URL, {
-        headers: { 'User-Agent': 'Recallth/1.0 (health@recallth.app)' },
-      });
-      if (offRes.ok) {
-        offData = (await offRes.json()) as OFFResponse;
-      }
-    } catch (fetchErr) {
-      console.warn('[GET /nutrition/search] OFF fetch failed:', fetchErr);
+    const apiKey = process.env.USDA_FDC_API_KEY;
+    if (!apiKey) {
+      console.warn('[GET /nutrition/search] USDA_FDC_API_KEY not set');
+      res.json({ success: true, data: { products: [], source: 'usda' }, error: null });
+      return;
     }
 
-    const rawProducts: OFFProduct[] = offData.products ?? [];
+    const USDA_URL =
+      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(q.trim())}` +
+      `&pageSize=10&api_key=${apiKey}`;
 
-    const products: FoodProduct[] = rawProducts
-      .filter((p) => typeof p.product_name === 'string' && p.product_name.trim().length > 0)
-      .map((p) => {
-        const nutriments = p.nutriments;
-        const sodiumSrv = nutriments?.['sodium_serving'];
-        let sodium: number | null = null;
-        if (sodiumSrv !== undefined) {
-          sodium = roundOrNull(sodiumSrv < 1 ? sodiumSrv * 1000 : sodiumSrv);
-        }
+    let usdaData: USDAResponse = {};
 
-        const brands = typeof p.brands === 'string' ? p.brands : '';
-        const firstBrand = brands.split(',')[0]?.trim() ?? '';
+    try {
+      const usdaRes = await fetch(USDA_URL);
+      if (usdaRes.ok) {
+        usdaData = (await usdaRes.json()) as USDAResponse;
+      } else {
+        console.warn('[GET /nutrition/search] USDA returned', usdaRes.status);
+      }
+    } catch (fetchErr) {
+      console.warn('[GET /nutrition/search] USDA fetch failed:', fetchErr);
+    }
+
+    const rawFoods: USDAFood[] = usdaData.foods ?? [];
+
+    const products: FoodProduct[] = rawFoods
+      .filter((f) => typeof f.description === 'string' && f.description.trim().length > 0)
+      .map((f) => {
+        const nutrients = f.foodNutrients;
+        const servingSize =
+          f.servingSize && f.servingSizeUnit
+            ? `${f.servingSize}${f.servingSizeUnit}`
+            : '';
 
         return {
-          id: p.code ?? '',
-          name: (p.product_name ?? '').trim(),
-          brand: firstBrand,
-          servingSize: typeof p.serving_size === 'string' ? p.serving_size : '',
+          id: String(f.fdcId ?? ''),
+          name: (f.description ?? '').trim(),
+          brand: (f.brandOwner ?? '').trim(),
+          servingSize,
           source: 'database' as const,
-          calories: pickNutrient(nutriments, 'energy-kcal_serving', 'energy-kcal_100g'),
-          protein: pickNutrient(nutriments, 'proteins_serving', 'proteins_100g'),
-          carbs: pickNutrient(nutriments, 'carbohydrates_serving', 'carbohydrates_100g'),
-          fat: pickNutrient(nutriments, 'fat_serving', 'fat_100g'),
-          sugar: roundOrNull(nutriments?.['sugars_serving']),
-          fiber: roundOrNull(nutriments?.['fiber_serving']),
-          sodium,
-          imageUrl: typeof p.image_url === 'string' ? p.image_url : null,
+          calories: findNutrient(nutrients, 'energy'),
+          protein: findNutrient(nutrients, 'protein'),
+          carbs: findNutrient(nutrients, 'carbohydrate'),
+          fat: findNutrient(nutrients, 'total lipid'),
+          sugar: findNutrient(nutrients, 'sugars'),
+          fiber: findNutrient(nutrients, 'fiber'),
+          sodium: findNutrient(nutrients, 'sodium'),
+          imageUrl: null,
         };
       });
 
-    res.json({ success: true, data: { products, source: 'openfoodfacts' }, error: null });
+    res.json({ success: true, data: { products, source: 'usda' }, error: null });
   } catch (err) {
     console.error('[GET /nutrition/search]', err);
     res.status(500).json({ success: false, data: null, error: 'Food search failed' });
