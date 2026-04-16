@@ -5,7 +5,8 @@ import { AuthRequest } from '../middleware/auth';
 import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/Nutrition';
 import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
-import { CATEGORY_TARGETS } from '../utils/nutritionTargets';
+import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } from '../utils/nutritionTargets';
+import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
 
 const router = Router();
@@ -36,33 +37,59 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
-    const prompt = `You are a nutrition expert. Parse the following food description and return structured nutrition data.
-The input may be in English, Cantonese, or Traditional Chinese (Hong Kong context). Recognise HK local food names.
+    const prompt = `You are a nutrition expert for Hong Kong food. Parse the following food description and return structured nutrition data.
+The input may be in English, Cantonese, or Traditional Chinese (Hong Kong context). Recognise HK local food names and chain restaurants.
 
 Food description: "${text.trim()}"
 ${typeof category === 'string' && category.trim().length > 0 ? `Nutrition category context: ${category.trim()}` : ''}
 
-Return a JSON array of food items. Each item must have:
-- name: food name (keep original language if Chinese/Cantonese)
-- quantity: numeric quantity (number)
-- unit: serving unit (e.g. 碟, 杯, 碗, 份, g, ml, piece)
-- nutrients: object with any relevant values from: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg), potassium (mg), phosphorus (mg), folate (µg), iron (mg), calcium (mg)
+IMPORTANT — Set meal detection:
+If the input is a set meal / combo (contains words like 餐, 套餐, set, combo, or references a known chain's meal deal), you MUST:
+1. List ALL fixed components of the set as confirmed items in "foods"
+2. If the set includes a DRINK CHOICE (飲品), list the common drink options for that chain/meal as "suggestions" — these are NOT confirmed, the user will pick one
 
-Use realistic estimates for HK portion sizes. Return ONLY a valid JSON array, no markdown, no explanation.
-Example: [{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}]`;
+Return a JSON object with two keys:
+- "foods": array of confirmed food items (always present, may be empty)
+- "suggestions": array of possible drink/add-on choices (present only when set meal has variable components, otherwise omit or use [])
+
+Each item in both arrays must have:
+- name: food name (keep original language)
+- quantity: numeric quantity
+- unit: serving unit (e.g. 杯, 份, g)
+- nutrients: object with relevant values from: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg)
+
+Use realistic HK portion sizes and chain-specific nutrition data where known.
+Return ONLY valid JSON, no markdown, no explanation.
+
+Example for a set meal with drink choice:
+{"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
+
+Example for a non-set item:
+{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
 
-    // Extract JSON array from response (same pattern as cabinet ai-lookup)
-    const jsonMatch = text2.match(/\[[\s\S]*\]/);
+    // Extract JSON object or array from response
+    const jsonMatch = text2.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
     if (!jsonMatch) {
       res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
       return;
     }
 
-    const foods = JSON.parse(jsonMatch[0]) as unknown[];
-    if (!Array.isArray(foods)) {
+    const parsed = JSON.parse(jsonMatch[0]) as unknown;
+    let foods: unknown[];
+    let suggestions: unknown[];
+
+    if (Array.isArray(parsed)) {
+      // Legacy array response — treat all as confirmed foods
+      foods = parsed;
+      suggestions = [];
+    } else if (parsed && typeof parsed === 'object') {
+      const obj = parsed as Record<string, unknown>;
+      foods = Array.isArray(obj.foods) ? obj.foods : [];
+      suggestions = Array.isArray(obj.suggestions) ? obj.suggestions : [];
+    } else {
       res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
       return;
     }
@@ -71,7 +98,7 @@ Example: [{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":
     const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-parse`);
 
-    res.json({ success: true, data: { foods }, aiUsage, error: null });
+    res.json({ success: true, data: { foods, suggestions }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI food parsing failed' });
@@ -298,12 +325,42 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
       }
     }
 
-    // Load category for this user (default: gym)
-    const categoryDoc = await UserNutritionCategory.findOne({ userId }).lean();
-    const category: NutritionCategory = categoryDoc?.category ?? 'gym';
-    const targets = CATEGORY_TARGETS[category];
+    // Load category + body stats in parallel
+    const [categoryDoc, profileDoc] = await Promise.all([
+      UserNutritionCategory.findOne({ userId }).lean(),
+      HealthProfile.findOne({ userId }, { 'body.weight': 1, 'body.height': 1, 'body.age': 1, 'body.sex': 1, 'body.activityLevel': 1 }).lean(),
+    ]);
 
-    // Build response: only nutrients that have a target defined
+    const category: NutritionCategory = categoryDoc?.category ?? 'gym';
+
+    // Attempt personalised targets if all body stats are present
+    const body = profileDoc?.body;
+    const canPersonalise =
+      body?.weight != null &&
+      body?.height != null &&
+      body?.age != null &&
+      (body?.sex === 'male' || body?.sex === 'female') &&
+      body?.activityLevel != null;
+
+    let targets = CATEGORY_TARGETS[category];
+    let targetBasis: 'personalised' | 'default' = 'default';
+    let formula: PersonalisedFormula | null = null;
+
+    if (canPersonalise) {
+      const result = computePersonalisedTargets(
+        category,
+        body!.weight!,
+        body!.height!,
+        body!.age!,
+        body!.sex as 'male' | 'female',
+        body!.activityLevel as ActivityLevel
+      );
+      targets = result.targets;
+      formula = result.formula;
+      targetBasis = 'personalised';
+    }
+
+    // Build response nutrients
     const nutrients: Record<
       string,
       { actual: number; target: number; unit: string; type: 'min' | 'max' }
@@ -318,7 +375,7 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
       };
     }
 
-    res.json({ success: true, data: { date: targetDate, category, nutrients }, error: null });
+    res.json({ success: true, data: { date: targetDate, category, nutrients, targetBasis, formula }, error: null });
   } catch (err) {
     console.error('[GET /nutrition/summary]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to get nutrition summary' });
@@ -588,7 +645,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     const { date } = req.query as { date?: string };
     const targetDate = typeof date === 'string' && DATE_REGEX.test(date) ? date : todayString();
 
-    const entries = await MealEntry.find({ userId, date: targetDate }).sort({ createdAt: 1 }).lean();
+    const entries = await MealEntry.find({ userId, date: targetDate }).sort({ createdAt: -1 }).lean();
     res.json({ success: true, data: entries, error: null });
   } catch (err) {
     console.error('[GET /nutrition]', err);
