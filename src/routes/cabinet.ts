@@ -912,6 +912,23 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
   });
 });
 
+// ─── Open Food Facts image lookup ─────────────────────────────────────────────
+async function fetchOffImage(name: string, brand: string): Promise<string> {
+  try {
+    const query = encodeURIComponent(`${brand} ${name}`.trim());
+    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${query}&json=1&page_size=1&fields=image_url,image_small_url`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const resp = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!resp.ok) return '';
+    const data = await resp.json() as { products?: { image_url?: string; image_small_url?: string }[] };
+    return data.products?.[0]?.image_url ?? data.products?.[0]?.image_small_url ?? '';
+  } catch {
+    return '';
+  }
+}
+
 // POST /cabinet/ai-lookup — AI product search for supplement/medication info
 router.post('/ai-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -955,9 +972,13 @@ Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"
       return;
     }
 
-    // Strip imageUrl — LLMs hallucinate image URLs; frontend uses letter placeholder instead
-    const sanitized = products.slice(0, 3).map((p: Record<string, unknown>) => ({ ...p, imageUrl: '' }));
-    res.json({ success: true, data: sanitized, error: null });
+    // Enrich with real product images from Open Food Facts (parallel, 3s timeout each)
+    const top3 = products.slice(0, 3) as Array<Record<string, unknown>>;
+    const imageUrls = await Promise.all(
+      top3.map((p) => fetchOffImage(String(p.name ?? ''), String(p.brand ?? '')))
+    );
+    const enriched = top3.map((p, i) => ({ ...p, imageUrl: imageUrls[i] }));
+    res.json({ success: true, data: enriched, error: null });
   } catch (err) {
     console.error('[POST /cabinet/ai-lookup]', err);
     res.status(500).json({ success: false, data: null, error: 'AI lookup failed' });
