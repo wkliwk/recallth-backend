@@ -1849,27 +1849,17 @@ imageProxyRouter.get('/image-proxy', async (req: Request, res: Response): Promis
     });
     clearTimeout(timer);
 
-    if (!upstream.ok || !upstream.body) {
+    if (!upstream.ok) {
       res.status(upstream.status === 404 ? 404 : 502).end();
       return;
     }
 
     const ct = upstream.headers.get('content-type') || 'image/jpeg';
+    const buf = Buffer.from(await upstream.arrayBuffer());
     res.setHeader('Content-Type', ct);
+    res.setHeader('Content-Length', buf.length);
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    const cl = upstream.headers.get('content-length');
-    if (cl) res.setHeader('Content-Length', cl);
-
-    // Stream the response
-    const reader = upstream.body.getReader();
-    const pump = async () => {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { res.end(); return; }
-        res.write(value);
-      }
-    };
-    await pump();
+    res.end(buf);
   } catch {
     res.status(502).end();
   }
