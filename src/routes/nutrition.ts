@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
-import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/Nutrition';
+import { MealEntry, UserNutritionCategory, UserNutritionCustomConfig, NutritionCategory } from '../models/Nutrition';
 import { CabinetItem } from '../models/CabinetItem';
 import { UserFoodItem } from '../models/UserFoodItem';
 import { MODELS } from '../config/models';
@@ -24,15 +24,50 @@ const getGenAI = () => {
   return new GoogleGenerativeAI(apiKey);
 };
 
+// ─── Valid nutrient keys for custom config ────────────────────────────────
+
+const VALID_NUTRIENT_KEYS = [
+  'calories',
+  'protein',
+  'carbs',
+  'fat',
+  'sugar',
+  'fiber',
+  'sodium',
+  'folate',
+  'iron',
+] as const;
+
+const DEFAULT_CUSTOM_NUTRIENTS = ['calories', 'protein', 'carbs', 'fat'];
+const DEFAULT_CUSTOM_GOALS: Record<string, number> = {
+  calories: 2000,
+  protein: 150,
+  carbs: 200,
+  fat: 65,
+};
+
 // ─── POST /nutrition/parse — AI food parsing ──────────────────────────────
 
 router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
+    const userId = req.userId as string;
     const { text, category } = req.body as { text?: unknown; category?: unknown };
 
     if (typeof text !== 'string' || text.trim().length === 0) {
       res.status(400).json({ success: false, data: null, error: 'text is required' });
       return;
+    }
+
+    // Build category context string — for custom, include the user's tracked nutrients
+    let categoryContext = '';
+    if (typeof category === 'string' && category.trim().length > 0) {
+      if (category.trim() === 'custom') {
+        const customConfigDoc = await UserNutritionCustomConfig.findOne({ userId }).lean();
+        const customNutrients: string[] = customConfigDoc?.nutrients ?? DEFAULT_CUSTOM_NUTRIENTS;
+        categoryContext = `custom (nutrients to track: ${customNutrients.join(', ')})`;
+      } else {
+        categoryContext = category.trim();
+      }
     }
 
     const genAI = getGenAI();
@@ -42,7 +77,7 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
 The input may be in English, Cantonese, or Traditional Chinese (Hong Kong context). Recognise HK local food names and chain restaurants.
 
 Food description: "${text.trim()}"
-${typeof category === 'string' && category.trim().length > 0 ? `Nutrition category context: ${category.trim()}` : ''}
+${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
 
 IMPORTANT — Set meal detection:
 If the input is a set meal / combo (contains words like 餐, 套餐, set, combo, or references a known chain's meal deal), you MUST:
@@ -335,7 +370,7 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
       }
     }
 
-    // Load category + body stats in parallel
+    // Load category + body stats + custom config (if needed) in parallel
     const [categoryDoc, profileDoc] = await Promise.all([
       UserNutritionCategory.findOne({ userId }).lean(),
       HealthProfile.findOne({ userId }, { 'body.weight': 1, 'body.height': 1, 'body.age': 1, 'body.sex': 1, 'body.activityLevel': 1 }).lean(),
@@ -346,6 +381,7 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
     // Attempt personalised targets if all body stats are present
     const body = profileDoc?.body;
     const canPersonalise =
+      category !== 'custom' &&
       body?.weight != null &&
       body?.height != null &&
       body?.age != null &&
@@ -356,7 +392,32 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
     let targetBasis: 'personalised' | 'default' = 'default';
     let formula: PersonalisedFormula | null = null;
 
-    if (canPersonalise) {
+    if (category === 'custom') {
+      // Use user's custom config for targets; fall back to defaults if no config saved
+      const customConfigDoc = await UserNutritionCustomConfig.findOne({ userId }).lean();
+
+      const customNutrients: string[] = customConfigDoc?.nutrients ?? DEFAULT_CUSTOM_NUTRIENTS;
+      const rawGoalsMap = customConfigDoc?.goals as unknown as Map<string, number> | Record<string, number> | undefined;
+      const customGoals: Record<string, number> =
+        rawGoalsMap == null
+          ? DEFAULT_CUSTOM_GOALS
+          : rawGoalsMap instanceof Map
+          ? Object.fromEntries(rawGoalsMap.entries())
+          : (rawGoalsMap as Record<string, number>);
+
+      // Build NutrientTarget array from custom config; goal value overrides CATEGORY_TARGETS default
+      const defaultCustomTargets = CATEGORY_TARGETS['custom'];
+      targets = customNutrients.map((nutrient) => {
+        const existing = defaultCustomTargets.find((t) => t.nutrient === nutrient);
+        return {
+          nutrient,
+          unit: existing?.unit ?? '',
+          dailyTarget: customGoals[nutrient] ?? existing?.dailyTarget ?? 0,
+          type: existing?.type ?? 'min',
+        };
+      });
+      targetBasis = 'default';
+    } else if (canPersonalise) {
       const result = computePersonalisedTargets(
         category,
         body!.weight!,
@@ -441,6 +502,120 @@ router.put('/category', async (req: AuthRequest, res: Response): Promise<void> =
   } catch (err) {
     console.error('[PUT /nutrition/category]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to update nutrition category' });
+  }
+});
+
+// ─── GET /nutrition/custom-config — get user's custom nutrient config ─────
+
+router.get('/custom-config', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const doc = await UserNutritionCustomConfig.findOne({ userId }).lean();
+
+    if (!doc) {
+      res.json({
+        success: true,
+        data: { nutrients: DEFAULT_CUSTOM_NUTRIENTS, goals: DEFAULT_CUSTOM_GOALS },
+        error: null,
+      });
+      return;
+    }
+
+    const goalsMap = doc.goals as unknown as Map<string, number> | Record<string, number>;
+    const goals: Record<string, number> =
+      goalsMap instanceof Map
+        ? Object.fromEntries(goalsMap.entries())
+        : (goalsMap as Record<string, number>);
+
+    res.json({ success: true, data: { nutrients: doc.nutrients, goals }, error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/custom-config]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to get custom nutrient config' });
+  }
+});
+
+// ─── PUT /nutrition/custom-config — save user's custom nutrient config ────
+
+router.put('/custom-config', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { nutrients, goals } = req.body as { nutrients?: unknown; goals?: unknown };
+
+    // Validate nutrients
+    if (!Array.isArray(nutrients) || nutrients.length === 0) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: 'nutrients must be a non-empty array',
+      });
+      return;
+    }
+
+    const invalidKeys = (nutrients as unknown[]).filter(
+      (k) => typeof k !== 'string' || !(VALID_NUTRIENT_KEYS as readonly string[]).includes(k)
+    );
+
+    if (invalidKeys.length > 0) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: `Invalid nutrient keys: ${invalidKeys.join(', ')}. Valid keys: ${VALID_NUTRIENT_KEYS.join(', ')}`,
+      });
+      return;
+    }
+
+    // Validate goals
+    if (typeof goals !== 'object' || goals === null || Array.isArray(goals)) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: 'goals must be an object mapping nutrient keys to numbers',
+      });
+      return;
+    }
+
+    const goalsObj = goals as Record<string, unknown>;
+    const invalidGoalKeys = Object.keys(goalsObj).filter(
+      (k) => !(VALID_NUTRIENT_KEYS as readonly string[]).includes(k)
+    );
+    if (invalidGoalKeys.length > 0) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: `Invalid goal keys: ${invalidGoalKeys.join(', ')}. Valid keys: ${VALID_NUTRIENT_KEYS.join(', ')}`,
+      });
+      return;
+    }
+
+    const invalidGoalValues = Object.entries(goalsObj).filter(([, v]) => typeof v !== 'number');
+    if (invalidGoalValues.length > 0) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: 'All goal values must be numbers',
+      });
+      return;
+    }
+
+    const validatedNutrients = nutrients as string[];
+    const validatedGoals = goalsObj as Record<string, number>;
+
+    const doc = await UserNutritionCustomConfig.findOneAndUpdate(
+      { userId },
+      { userId, nutrients: validatedNutrients, goals: validatedGoals, updatedAt: new Date() },
+      { upsert: true, new: true }
+    );
+
+    const savedGoalsMap = doc.goals as unknown as Map<string, number> | Record<string, number>;
+    const savedGoals: Record<string, number> =
+      savedGoalsMap instanceof Map
+        ? Object.fromEntries(savedGoalsMap.entries())
+        : (savedGoalsMap as Record<string, number>);
+
+    res.json({ success: true, data: { nutrients: doc.nutrients, goals: savedGoals }, error: null });
+  } catch (err) {
+    console.error('[PUT /nutrition/custom-config]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to update custom nutrient config' });
   }
 });
 
