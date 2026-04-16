@@ -549,15 +549,36 @@ Rules:
       } catch { /* skip */ }
     }
 
-    // Assign scraped images to products that lack one
+    // Assign scraped images to products; fallback to Open Food Facts
     let imgIdx = 0;
     for (const p of products) {
-      // Clear any AI-hallucinated URLs
-      p.imageUrl = null;
+      p.imageUrl = null; // Clear any AI-hallucinated URLs
       if (imgIdx < scrapedImages.length) {
         p.imageUrl = scrapedImages[imgIdx++];
       }
     }
+
+    // Fallback: for products still without image, try Open Food Facts
+    await Promise.all(
+      products.map(async (p) => {
+        if (p.imageUrl) return;
+        try {
+          const q = encodeURIComponent(`${p.brand || ''} ${p.name || ''}`.trim());
+          const offUrl = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${q}&json=1&page_size=1&fields=image_url`;
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 3000);
+          const resp = await fetch(offUrl, { signal: ctrl.signal });
+          clearTimeout(t);
+          if (!resp.ok) return;
+          const data = await resp.json() as { products?: { image_url?: string }[] };
+          const img = data.products?.[0]?.image_url;
+          if (img && img.startsWith('https://')) {
+            p.imageUrl = img;
+            console.log(`[AI-Lookup] OFF fallback image: ${img}`);
+          }
+        } catch { /* skip */ }
+      })
+    );
 
     res.json({ success: true, error: null, data: products });
   } catch (err) {
@@ -1082,115 +1103,6 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
   });
 });
 
-// ─── Image URL validation ──────────────────────────────────────────────────────
-// Returns true if the URL looks like an actual image file (not a webpage)
-function isImageUrl(url: string): boolean {
-  if (!url) return false;
-  try {
-    const u = new URL(url);
-    if (u.protocol !== 'https:') return false;
-    // Only accept hostnames that are confirmed to serve CORS-safe images.
-    // Brand website CDNs (pvl.ca, optimumnutrition.com, etc.) block cross-origin
-    // image loads with ERR_BLOCKED_BY_ORB — extension alone is not enough.
-    const host = u.hostname;
-    return (
-      host === 'm.media-amazon.com' ||
-      host === 'images-na.ssl-images-amazon.com' ||
-      host === 'images.iherb.com' ||
-      host === 'i.iherb.com' ||
-      host === 'iherb.azureedge.net' ||
-      host === 'images.openfoodfacts.org' ||
-      host.endsWith('.cloudinary.com') ||
-      host === 'cdn.shopify.com'
-    );
-  } catch {
-    return false;
-  }
-}
-
-// ─── Open Food Facts image lookup ─────────────────────────────────────────────
-async function fetchOffImage(name: string, brand: string): Promise<string> {
-  try {
-    const query = encodeURIComponent(`${brand} ${name}`.trim());
-    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${query}&json=1&page_size=1&fields=image_url,image_small_url`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const resp = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!resp.ok) return '';
-    const data = await resp.json() as { products?: { image_url?: string; image_small_url?: string }[] };
-    return data.products?.[0]?.image_url ?? data.products?.[0]?.image_small_url ?? '';
-  } catch {
-    return '';
-  }
-}
-
-// POST /cabinet/ai-lookup — AI product search for supplement/medication info
-router.post('/ai-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { query } = req.body as { query?: string };
-    if (!query || typeof query !== 'string' || query.trim().length === 0) {
-      res.status(400).json({ success: false, data: null, error: 'query is required' });
-      return;
-    }
-
-    const genAI = getGenAI();
-    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
-
-    const prompt = `You are a supplement product expert. The user is searching for: "${query.trim()}"
-
-Return up to 3 matching supplement or health product results as a JSON array. Each result must have:
-- name: product name (string, required)
-- brand: brand name (string, required)
-- type: one of "supplement", "vitamin", "medication" (string, required)
-- dosage: typical serving size e.g. "25g", "2 scoops", "1 capsule" (string, required)
-- frequency: one of "Daily", "Twice daily", "As needed" (string, required)
-- timing: one of "Morning", "Pre-workout", "With meals", "Evening", "Before bed" (string, required)
-- description: 1-2 sentence product description (string, required)
-- ingredients: key active ingredients e.g. "Whey Protein Isolate, Whey Protein Concentrate" (string, required)
-- imageUrl: a direct image file URL ending in .jpg/.png/.webp from a CDN (e.g. Amazon, iHerb). Must be a direct image file, NOT a product webpage URL. Use "" if unsure. (string, required)
-
-Return ONLY a valid JSON array, no markdown, no explanation.
-Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"supplement","dosage":"30.4g (1 scoop)","frequency":"Daily","timing":"Post-workout","description":"Premium whey protein blend with 24g of protein per serving.","ingredients":"Whey Protein Isolate, Whey Protein Concentrate, Whey Peptides","imageUrl":""}]`;
-
-    const result = await model.generateContent(prompt);
-    const text = result.response.text().trim();
-
-    // Extract JSON array from response
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
-      return;
-    }
-
-    const products = JSON.parse(jsonMatch[0]);
-    if (!Array.isArray(products) || products.length === 0) {
-      res.status(404).json({ success: false, data: null, error: 'No products found for that query' });
-      return;
-    }
-
-    // For each product: use AI imageUrl if it's a real image file URL,
-    // otherwise fall back to Open Food Facts lookup, otherwise ""
-    const top3 = products.slice(0, 3) as Array<Record<string, unknown>>;
-    const enriched = await Promise.all(
-      top3.map(async (p) => {
-        const aiUrl = String(p.imageUrl ?? '');
-        if (isImageUrl(aiUrl)) return { ...p, imageUrl: aiUrl };
-        const offUrl = await fetchOffImage(String(p.name ?? ''), String(p.brand ?? ''));
-        return { ...p, imageUrl: offUrl };
-      })
-    );
-    // Final safety net: strip any imageUrl that slipped through without passing the allowlist
-    const safe = enriched.map((p) => ({
-      ...p,
-      imageUrl: isImageUrl(String(p.imageUrl ?? '')) ? String(p.imageUrl) : '',
-    }));
-    res.json({ success: true, data: safe, error: null });
-  } catch (err) {
-    console.error('[POST /cabinet/ai-lookup]', err);
-    res.status(500).json({ success: false, data: null, error: 'AI lookup failed' });
-  }
-});
 
 // POST /cabinet/stack-builder — AI-recommended supplement stack from health goals
 router.post('/stack-builder', async (req: AuthRequest, res: Response): Promise<void> => {
