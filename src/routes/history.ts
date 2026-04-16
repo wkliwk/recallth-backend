@@ -7,6 +7,7 @@ import { HealthProfile } from '../models/HealthProfile';
 import { CabinetChangeLog } from '../models/CabinetChangeLog';
 import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -390,6 +391,7 @@ Tone: warm, encouraging, supportive. Not clinical. Not judgmental.`;
     console.log(
       `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=weekly-digest`
     );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     let raw = result.response.text().trim();
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
@@ -403,6 +405,7 @@ Tone: warm, encouraging, supportive. Not clinical. Not judgmental.`;
         weekEnd: weekEnd.toISOString().slice(0, 10),
         summary: parsed.summary,
         suggestion: parsed.suggestion,
+        aiUsage,
       },
     });
   } catch (err) {

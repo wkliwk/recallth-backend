@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { GoalCheckIn } from '../models/GoalCheckIn';
 import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
 
 export const goalsRouter = Router();
 goalsRouter.use(authenticate);
@@ -81,6 +82,7 @@ goalsRouter.post('/check-in', async (req: AuthRequest, res: Response): Promise<v
 
     // Generate AI response
     let aiResponse: string | undefined;
+    let aiUsage: ReturnType<typeof buildAiUsage> | undefined;
     try {
       const genAI = getGenAI();
       const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
@@ -97,6 +99,7 @@ goalsRouter.post('/check-in', async (req: AuthRequest, res: Response): Promise<v
 
       const usage = result.response.usageMetadata;
       console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=goal-check-in`);
+      aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
     } catch (aiErr) {
       console.error('[POST /goals/check-in] AI failed (non-fatal):', aiErr);
     }
@@ -108,7 +111,7 @@ goalsRouter.post('/check-in', async (req: AuthRequest, res: Response): Promise<v
       { upsert: true, new: true }
     );
 
-    res.json({ success: true, data: { checkIn, aiResponse }, error: null });
+    res.json({ success: true, data: { checkIn, aiResponse, ...(aiUsage ? { aiUsage } : {}) }, error: null });
   } catch (err) {
     console.error('[POST /goals/check-in]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to save check-in' });

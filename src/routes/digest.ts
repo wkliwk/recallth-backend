@@ -9,6 +9,7 @@ import { HealthProfile } from '../models/HealthProfile';
 import { CabinetItem } from '../models/CabinetItem';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -155,6 +156,7 @@ Write a concise weekly health digest. Return ONLY valid JSON (no markdown):
     const result = await model.generateContent(prompt);
     const usage = result.response.usageMetadata;
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=weekly-digest`);
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     let raw = result.response.text().trim();
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
@@ -171,7 +173,7 @@ Write a concise weekly health digest. Return ONLY valid JSON (no markdown):
       generatedAt: new Date(),
     });
 
-    res.json({ success: true, data: digest });
+    res.json({ success: true, data: { ...digest.toObject(), aiUsage } });
   } catch (err) {
     console.error('[GET /digest]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to generate digest' });

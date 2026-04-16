@@ -7,6 +7,7 @@ import { CabinetItem } from '../models/CabinetItem';
 import { HealthProfile } from '../models/HealthProfile';
 import { InsightCache } from '../models/InsightCache';
 import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
 
 const router = Router();
 
@@ -178,6 +179,7 @@ Rules:
     console.log(
       `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=bloodwork-analyse`
     );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     const text = result.response.text().trim();
     const cleaned = text.replace(/^\`\`\`(?:json)?\s*/i, '').replace(/\s*\`\`\`$/, '').trim();
@@ -201,6 +203,7 @@ Rules:
         supplementAdjustments: parsed.supplementAdjustments ?? [],
         whatToWatch: parsed.whatToWatch ?? [],
         generatedAt: new Date().toISOString(),
+        aiUsage,
       },
       error: null,
     });
@@ -347,6 +350,7 @@ Rules:
     const result = await aiModel.generateContent(prompt);
     const usage = result.response.usageMetadata;
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=bloodwork-interpret`);
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     let raw = result.response.text().trim();
     if (raw.startsWith('```')) raw = raw.replace(/^```[a-z]*\n?/, '').replace(/\n?```$/, '').trim();
@@ -362,7 +366,7 @@ Rules:
       { upsert: true, new: true }
     );
 
-    res.json({ success: true, data: parsed, error: null });
+    res.json({ success: true, data: { ...parsed, aiUsage }, error: null });
   } catch (err) {
     console.error('[POST /bloodwork/interpret]', err);
     res.status(500).json({ success: false, data: null, error: 'Bloodwork interpretation failed' });

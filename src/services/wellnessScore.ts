@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { IHealthProfile } from '../models/HealthProfile';
 import { ICabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
+import { buildAiUsage, AiUsage } from '../utils/aiUsage';
 
 // ─── Response types ────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ export interface WellnessScoreResult {
     goalAlignment: CategoryBreakdown;
   };
   tips: string[];
+  aiUsage?: AiUsage;
 }
 
 // ─── Profile completeness (deterministic, 40 pts max) ─────────────────────
@@ -206,21 +208,25 @@ function parseGoalAlignmentResponse(text: string): GeminiGoalAlignmentResponse {
 export async function scoreGoalAlignment(
   goals: string[],
   activeItems: ICabinetItem[]
-): Promise<CategoryBreakdown> {
+): Promise<{ breakdown: CategoryBreakdown; aiUsage?: AiUsage }> {
   // If no goals or no cabinet items, score 0 with a clear detail message
   if (goals.length === 0) {
     return {
-      score: 0,
-      max: GOAL_ALIGNMENT_MAX,
-      detail: 'No goals set — add goals to unlock this score.',
+      breakdown: {
+        score: 0,
+        max: GOAL_ALIGNMENT_MAX,
+        detail: 'No goals set — add goals to unlock this score.',
+      },
     };
   }
 
   if (activeItems.length === 0) {
     return {
-      score: 0,
-      max: GOAL_ALIGNMENT_MAX,
-      detail: 'No supplements in cabinet to assess against your goals.',
+      breakdown: {
+        score: 0,
+        max: GOAL_ALIGNMENT_MAX,
+        detail: 'No supplements in cabinet to assess against your goals.',
+      },
     };
   }
 
@@ -242,13 +248,17 @@ export async function scoreGoalAlignment(
   console.log(
     `[AI] model=${MODELS.WELLNESS} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=wellness_goal_alignment`
   );
+  const aiUsage = buildAiUsage(MODELS.WELLNESS, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
   const result = parseGoalAlignmentResponse(text);
 
   return {
-    score: result.score,
-    max: GOAL_ALIGNMENT_MAX,
-    detail: result.rationale,
+    breakdown: {
+      score: result.score,
+      max: GOAL_ALIGNMENT_MAX,
+      detail: result.rationale,
+    },
+    aiUsage,
   };
 }
 
@@ -308,11 +318,14 @@ export async function computeWellnessScore(
 ): Promise<WellnessScoreResult> {
   const goals = profile?.goals?.primary ?? [];
 
-  const [profileBreakdown, cabinetBreakdown, goalBreakdown] = await Promise.all([
+  const [profileBreakdown, cabinetBreakdown, goalAlignmentResult] = await Promise.all([
     Promise.resolve(scoreProfileCompleteness(profile)),
     Promise.resolve(scoreCabinetQuality(activeItems, hasMajorInteraction)),
     scoreGoalAlignment(goals, activeItems),
   ]);
+
+  const goalBreakdown = goalAlignmentResult.breakdown;
+  const aiUsage = goalAlignmentResult.aiUsage;
 
   const score = profileBreakdown.score + cabinetBreakdown.score + goalBreakdown.score;
 
@@ -328,5 +341,6 @@ export async function computeWellnessScore(
     score: Math.min(100, Math.max(0, score)),
     breakdown,
     tips,
+    ...(aiUsage ? { aiUsage } : {}),
   };
 }

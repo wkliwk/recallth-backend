@@ -10,6 +10,7 @@ import { SideEffect } from '../models/SideEffect';
 import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
 import { InsightCache } from '../models/InsightCache';
+import { buildAiUsage } from '../utils/aiUsage';
 
 async function resolveScopedUserId(
   ownerId: Types.ObjectId,
@@ -481,6 +482,7 @@ Rules:
     console.log(
       `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=ai-lookup`
     );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     const text = result.response.text().trim();
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -638,7 +640,7 @@ Rules:
       }
     }
 
-    res.json({ success: true, error: null, data: products });
+    res.json({ success: true, error: null, data: products, aiUsage });
   } catch (err) {
     console.error('[POST /cabinet/ai-lookup]', err);
     res.status(500).json({ success: false, data: null, error: 'Product lookup failed' });
@@ -687,6 +689,7 @@ Rules:
     console.log(
       `[AI] model=${MODELS.EXTRACTION} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=label-scan`
     );
+    const aiUsage = buildAiUsage(MODELS.EXTRACTION, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     const text = result.response.text().trim();
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -699,7 +702,7 @@ Rules:
       return;
     }
 
-    res.json({ success: true, error: null, data: extracted });
+    res.json({ success: true, error: null, data: extracted, aiUsage });
   } catch (err) {
     console.error('[POST /cabinet/scan]', err);
     res.status(500).json({ success: false, data: null, error: 'Scan failed' });
@@ -739,6 +742,7 @@ Do NOT include markdown fences. Return only the JSON array.`;
     console.log(
       `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=deal-finder`
     );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     const text = result.response.text().trim();
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -751,7 +755,7 @@ Do NOT include markdown fences. Return only the JSON array.`;
       return;
     }
 
-    res.json({ success: true, error: null, data: tips });
+    res.json({ success: true, error: null, data: tips, aiUsage });
   } catch (err) {
     console.error('[GET /cabinet/deal-finder]', err);
     res.status(500).json({ success: false, data: null, error: 'Deal finder failed' });
@@ -851,6 +855,7 @@ Do NOT include markdown fences. Return only the JSON array.`;
     console.log(
       `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=reaction-insights`
     );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     const text = result.response.text().trim();
     const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
@@ -888,6 +893,7 @@ Do NOT include markdown fences. Return only the JSON array.`;
       data: {
         insights,
         generatedAt: new Date().toISOString(),
+        aiUsage,
       },
       error: null,
     });

@@ -9,6 +9,7 @@ import { BloodworkEntry } from '../models/BloodworkEntry';
 import { CabinetItem } from '../models/CabinetItem';
 import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
 
 const router = Router();
 router.use(authenticate);
@@ -155,6 +156,7 @@ This is general health information, not personalised medical advice.`;
     );
 
     const brief = result.response.text().trim();
+    const briefUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
     // Cache the result (upsert)
     const generatedAt = new Date();
@@ -170,6 +172,7 @@ This is general health information, not personalised medical advice.`;
         brief,
         generatedAt: generatedAt.toISOString(),
         fromCache: false,
+        aiUsage: briefUsage,
       },
       error: null,
     });
@@ -279,8 +282,9 @@ Rules:
 
     const usage = result.response.usageMetadata;
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=journal-insights`);
+    const journalUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
-    res.json({ success: true, data: { insights, generatedAt: generatedAt.toISOString(), fromCache: false }, error: null });
+    res.json({ success: true, data: { insights, generatedAt: generatedAt.toISOString(), fromCache: false, aiUsage: journalUsage }, error: null });
   } catch (err) {
     console.error('[POST /insights/journal-insights]', err);
     res.status(500).json({ success: false, data: null, error: 'Journal insights generation failed' });

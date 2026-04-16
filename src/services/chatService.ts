@@ -8,6 +8,7 @@ import { DailyLog, IDailyLog } from '../models/DailyLog';
 import { SideEffect, ISideEffect } from '../models/SideEffect';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
+import { buildAiUsage, AiUsage } from '../utils/aiUsage';
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -552,6 +553,7 @@ export interface ChatResult {
   detectedLanguage: DetectedLanguage;
   suggestions: string[];
   actions: ChatAction[];
+  aiUsage: AiUsage;
 }
 
 export async function processChat(
@@ -640,6 +642,7 @@ export async function processChat(
   console.log(
     `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=chat`
   );
+  const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
 
   const { clean: withoutActions, actions } = parseActions(rawContent);
   const { clean: assistantContent, suggestions } = parseSuggestions(withoutActions);
@@ -679,5 +682,6 @@ export async function processChat(
     detectedLanguage: language,
     suggestions,
     actions,
+    aiUsage,
   };
 }
