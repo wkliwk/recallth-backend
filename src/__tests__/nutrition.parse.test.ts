@@ -87,6 +87,39 @@ describe('parseAiNutritionResponse', () => {
     });
   });
 
+  // ── estimated field ──────────────────────────────────────────────────────
+  describe('estimated field', () => {
+    it('passes through estimated:true when AI marks quantity as estimated', () => {
+      const aiResponse = JSON.stringify({
+        foods: [
+          { name: '雲吞麵 (麵底)', quantity: 1, unit: '份', estimated: true, nutrients: { calories: 280, protein: 9, carbs: 52, fat: 4 } },
+          { name: '鮮蝦雲吞', quantity: 5, unit: '粒', estimated: true, nutrients: { calories: 120, protein: 8, carbs: 10, fat: 5 } },
+        ],
+        suggestions: [],
+      });
+
+      const result = parseAiNutritionResponse(aiResponse);
+
+      expect((result!.foods[0] as { estimated: boolean }).estimated).toBe(true);
+      expect((result!.foods[1] as { estimated: boolean }).estimated).toBe(true);
+    });
+
+    it('passes through estimated:false when user explicitly stated quantity', () => {
+      const aiResponse = JSON.stringify({
+        foods: [
+          { name: '炒烏冬', quantity: 1, unit: '份', estimated: true, nutrients: { calories: 420, protein: 12, carbs: 68, fat: 10 } },
+          { name: '雞球', quantity: 10, unit: '粒', estimated: false, nutrients: { calories: 300, protein: 28, carbs: 8, fat: 18 } },
+        ],
+        suggestions: [],
+      });
+
+      const result = parseAiNutritionResponse(aiResponse);
+
+      expect((result!.foods[0] as { estimated: boolean }).estimated).toBe(true);
+      expect((result!.foods[1] as { estimated: boolean }).estimated).toBe(false);
+    });
+  });
+
   // ── Malformed / unexpected format ────────────────────────────────────────
   describe('malformed responses', () => {
     it('returns null when AI response has no JSON', () => {

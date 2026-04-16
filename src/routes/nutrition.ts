@@ -99,20 +99,25 @@ Each item in both arrays must have:
 - name: food name (keep original language)
 - quantity: numeric quantity
 - unit: serving unit (e.g. 杯, 份, 粒, g)
+- estimated: boolean — true if quantity was NOT explicitly stated by the user and you are using a standard HK portion; false if the user explicitly stated a number or size (e.g. "五粒", "10粒", "大份", "細碗")
 - nutrients: object with relevant values from: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg)
 
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
 
-Example for a compound dish (MUST split into separate items):
+Example for a compound dish where user stated quantity (estimated: false for stated, estimated: true for unstated):
 Input: "雞扒炒烏冬 大概有10粒雞球左右"
-{"foods":[{"name":"炒烏冬","quantity":1,"unit":"份","nutrients":{"calories":420,"protein":12,"carbs":68,"fat":10}},{"name":"雞球","quantity":10,"unit":"粒","nutrients":{"calories":300,"protein":28,"carbs":8,"fat":18}}],"suggestions":[]}
+{"foods":[{"name":"炒烏冬","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":420,"protein":12,"carbs":68,"fat":10}},{"name":"雞球","quantity":10,"unit":"粒","estimated":false,"nutrients":{"calories":300,"protein":28,"carbs":8,"fat":18}}],"suggestions":[]}
+
+Example for a dish with no stated quantity (all estimated: true):
+Input: "雲吞麵"
+{"foods":[{"name":"雲吞麵 (麵底)","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":280,"protein":9,"carbs":52,"fat":4}},{"name":"鮮蝦雲吞","quantity":5,"unit":"粒","estimated":true,"nutrients":{"calories":120,"protein":8,"carbs":10,"fat":5}}],"suggestions":[]}
 
 Example for a set meal with drink choice:
-{"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
+{"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
 
 Example for a single item:
-{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
+{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","estimated":true,"nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
