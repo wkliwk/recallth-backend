@@ -9,6 +9,7 @@ import { MODELS } from '../config/models';
 import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } from '../utils/nutritionTargets';
 import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
+import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
 
 const router = Router();
 
@@ -79,6 +80,12 @@ The input may be in English, Cantonese, or Traditional Chinese (Hong Kong contex
 Food description: "${text.trim()}"
 ${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
 
+IMPORTANT — Compound dish splitting:
+If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
+- Extract explicit quantities where stated (e.g., "10粒" → quantity: 10, unit: "粒"; "大概10粒" → quantity: 10)
+- Each component gets its own realistic nutrition estimate based on its quantity
+- Examples of compound dishes to split: 炒烏冬+雞球, 湯麵+叉燒, 飯+餸, fried noodles+topping
+
 IMPORTANT — Set meal detection:
 If the input is a set meal / combo (contains words like 餐, 套餐, set, combo, or references a known chain's meal deal), you MUST:
 1. List ALL fixed components of the set as confirmed items in "foods"
@@ -91,44 +98,31 @@ Return a JSON object with two keys:
 Each item in both arrays must have:
 - name: food name (keep original language)
 - quantity: numeric quantity
-- unit: serving unit (e.g. 杯, 份, g)
+- unit: serving unit (e.g. 杯, 份, 粒, g)
 - nutrients: object with relevant values from: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg)
 
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
 
+Example for a compound dish (MUST split into separate items):
+Input: "雞扒炒烏冬 大概有10粒雞球左右"
+{"foods":[{"name":"炒烏冬","quantity":1,"unit":"份","nutrients":{"calories":420,"protein":12,"carbs":68,"fat":10}},{"name":"雞球","quantity":10,"unit":"粒","nutrients":{"calories":300,"protein":28,"carbs":8,"fat":18}}],"suggestions":[]}
+
 Example for a set meal with drink choice:
 {"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
 
-Example for a non-set item:
+Example for a single item:
 {"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
 
-    // Extract JSON object or array from response
-    const jsonMatch = text2.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    const parseResult = parseAiNutritionResponse(text2);
+    if (!parseResult) {
       res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
       return;
     }
-
-    const parsed = JSON.parse(jsonMatch[0]) as unknown;
-    let foods: unknown[];
-    let suggestions: unknown[];
-
-    if (Array.isArray(parsed)) {
-      // Legacy array response — treat all as confirmed foods
-      foods = parsed;
-      suggestions = [];
-    } else if (parsed && typeof parsed === 'object') {
-      const obj = parsed as Record<string, unknown>;
-      foods = Array.isArray(obj.foods) ? obj.foods : [];
-      suggestions = Array.isArray(obj.suggestions) ? obj.suggestions : [];
-    } else {
-      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
-      return;
-    }
+    const { foods, suggestions } = parseResult;
 
     const usage = result.response.usageMetadata;
     const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
