@@ -159,7 +159,7 @@ Input may be in English, Cantonese, or Traditional Chinese. Recognise HK local f
 Each item must have these exact fields:
 - name: food name (keep original language if query is Chinese/Cantonese)
 - brand: brand name if a branded product, empty string if generic food
-- servingSize: typical serving size string (e.g. "100g", "1 cup (240ml)", "1 piece")
+- servingSize: use a natural, culturally appropriate serving unit — NOT just "100g". If the query is in Chinese/Cantonese, use HK Cantonese measure words (量詞), e.g. "一條" for stick-shaped foods (蟹柳/香腸), "一隻" for whole fruits (香蕉/橙), "一塊" for flat pieces (雞胸/豆腐), "一碗" for bowl foods (麵/飯/湯), "一杯" for drinks (咖啡/奶茶), "一個" for round items (雞蛋/麵包). For English queries, use natural English units like "1 medium", "1 cup", "1 slice", "1 piece".
 - calories: kcal per serving (number or null)
 - protein: grams per serving (number or null)
 - carbs: grams per serving (number or null)
