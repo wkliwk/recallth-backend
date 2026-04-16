@@ -105,33 +105,12 @@ Example for a non-set item:
   }
 });
 
-// ─── USDA FoodData Central types ─────────────────────────────────────────
-
-interface USDAFoodNutrient {
-  nutrientName?: string;
-  unitName?: string;
-  value?: number;
-}
-
-interface USDAFood {
-  fdcId?: number;
-  description?: string;
-  brandOwner?: string;
-  servingSize?: number;
-  servingSizeUnit?: string;
-  foodNutrients?: USDAFoodNutrient[];
-}
-
-interface USDAResponse {
-  foods?: USDAFood[];
-}
-
 interface FoodProduct {
   id: string;
   name: string;
   brand: string;
   servingSize: string;
-  source: 'database';
+  source: 'database' | 'ai';
   calories: number | null;
   protein: number | null;
   carbs: number | null;
@@ -160,28 +139,7 @@ function roundOrNull(value: number | undefined): number | null {
   return Math.round(value * 10) / 10;
 }
 
-function findNutrient(nutrients: USDAFoodNutrient[] | undefined, name: string): number | null {
-  if (!nutrients) return null;
-  const match = nutrients.find((n) => n.nutrientName?.toLowerCase().includes(name.toLowerCase()));
-  return match?.value !== undefined ? roundOrNull(match.value) : null;
-}
-
-// ─── GET /nutrition/search — USDA FoodData Central product search ──────────
-
-async function toEnglishIfChinese(query: string): Promise<string> {
-  if (!/[\u4e00-\u9fff]/.test(query)) return query;
-  try {
-    const genAI = getGenAI();
-    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
-    const result = await model.generateContent(
-      `Translate this food name to English. Return only the English food name, nothing else: "${query}"`
-    );
-    const translated = result.response.text().trim();
-    return translated.length > 0 ? translated : query;
-  } catch {
-    return query;
-  }
-}
+// ─── GET /nutrition/search — AI-powered food lookup ──────────────────────
 
 router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -192,61 +150,62 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
-    const apiKey = process.env.USDA_FDC_API_KEY;
-    if (!apiKey) {
-      console.warn('[GET /nutrition/search] USDA_FDC_API_KEY not set');
-      res.json({ success: true, data: { products: [], source: 'usda' }, error: null });
-      return;
-    }
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
-    const searchTerm = await toEnglishIfChinese(q.trim());
+    const prompt = `You are a nutrition database. Given the food name or product query below, return a JSON array of 1-5 matching food items with accurate nutrition data per typical serving.
+Input may be in English, Cantonese, or Traditional Chinese. Recognise HK local food and international brands.
 
-    const USDA_URL =
-      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(searchTerm)}` +
-      `&pageSize=10&api_key=${apiKey}`;
+Each item must have these exact fields:
+- name: food name (keep original language if query is Chinese/Cantonese)
+- brand: brand name if a branded product, empty string if generic food
+- servingSize: typical serving size string (e.g. "100g", "1 cup (240ml)", "1 piece")
+- calories: kcal per serving (number or null)
+- protein: grams per serving (number or null)
+- carbs: grams per serving (number or null)
+- fat: grams per serving (number or null)
+- sugar: grams per serving (number or null)
+- fiber: grams per serving (number or null)
+- sodium: mg per serving (number or null)
 
-    let usdaData: USDAResponse = {};
+Food query: "${q.trim()}"
+
+Return ONLY a valid JSON array. No markdown, no explanation.
+Example: [{"name":"雞胸肉","brand":"","servingSize":"100g","calories":165,"protein":31,"carbs":0,"fat":3.6,"sugar":0,"fiber":0,"sodium":74}]`;
+
+    let products: FoodProduct[] = [];
 
     try {
-      const usdaRes = await fetch(USDA_URL);
-      if (usdaRes.ok) {
-        usdaData = (await usdaRes.json()) as USDAResponse;
-      } else {
-        console.warn('[GET /nutrition/search] USDA returned', usdaRes.status);
+      const result = await model.generateContent(prompt);
+      const raw = result.response.text().trim();
+      const jsonMatch = raw.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        const items = JSON.parse(jsonMatch[0]) as Record<string, unknown>[];
+        if (Array.isArray(items)) {
+          products = items
+            .filter((item) => typeof item.name === 'string' && item.name.trim().length > 0)
+            .map((item, idx) => ({
+              id: `ai-${idx}`,
+              name: String(item.name ?? '').trim(),
+              brand: String(item.brand ?? '').trim(),
+              servingSize: String(item.servingSize ?? '').trim(),
+              source: 'ai' as const,
+              calories: typeof item.calories === 'number' ? roundOrNull(item.calories) : null,
+              protein: typeof item.protein === 'number' ? roundOrNull(item.protein) : null,
+              carbs: typeof item.carbs === 'number' ? roundOrNull(item.carbs) : null,
+              fat: typeof item.fat === 'number' ? roundOrNull(item.fat) : null,
+              sugar: typeof item.sugar === 'number' ? roundOrNull(item.sugar) : null,
+              fiber: typeof item.fiber === 'number' ? roundOrNull(item.fiber) : null,
+              sodium: typeof item.sodium === 'number' ? roundOrNull(item.sodium) : null,
+              imageUrl: null,
+            }));
+        }
       }
-    } catch (fetchErr) {
-      console.warn('[GET /nutrition/search] USDA fetch failed:', fetchErr);
+    } catch (aiErr) {
+      console.warn('[GET /nutrition/search] AI lookup failed:', aiErr);
     }
 
-    const rawFoods: USDAFood[] = usdaData.foods ?? [];
-
-    const products: FoodProduct[] = rawFoods
-      .filter((f) => typeof f.description === 'string' && f.description.trim().length > 0)
-      .map((f) => {
-        const nutrients = f.foodNutrients;
-        const servingSize =
-          f.servingSize && f.servingSizeUnit
-            ? `${f.servingSize}${f.servingSizeUnit}`
-            : '';
-
-        return {
-          id: String(f.fdcId ?? ''),
-          name: (f.description ?? '').trim(),
-          brand: (f.brandOwner ?? '').trim(),
-          servingSize,
-          source: 'database' as const,
-          calories: findNutrient(nutrients, 'energy'),
-          protein: findNutrient(nutrients, 'protein'),
-          carbs: findNutrient(nutrients, 'carbohydrate'),
-          fat: findNutrient(nutrients, 'total lipid'),
-          sugar: findNutrient(nutrients, 'sugars'),
-          fiber: findNutrient(nutrients, 'fiber'),
-          sodium: findNutrient(nutrients, 'sodium'),
-          imageUrl: null,
-        };
-      });
-
-    res.json({ success: true, data: { products, source: 'usda' }, error: null });
+    res.json({ success: true, data: { products, source: 'ai' }, error: null });
   } catch (err) {
     console.error('[GET /nutrition/search]', err);
     res.status(500).json({ success: false, data: null, error: 'Food search failed' });
