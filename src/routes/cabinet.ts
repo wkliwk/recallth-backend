@@ -927,6 +927,7 @@ function isImageUrl(url: string): boolean {
       host === 'm.media-amazon.com' ||
       host === 'images-na.ssl-images-amazon.com' ||
       host === 'images.iherb.com' ||
+      host === 'i.iherb.com' ||
       host === 'iherb.azureedge.net' ||
       host === 'images.openfoodfacts.org' ||
       host.endsWith('.cloudinary.com') ||
