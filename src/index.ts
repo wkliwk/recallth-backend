@@ -42,7 +42,7 @@ app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
 app.use('/profile/auto-extracted', authenticate, extractionReviewRouter);
-app.use('/cabinet', imageProxyRouter);  // image proxy — no auth (used as <img src>)
+app.use('/img', imageProxyRouter);  // image proxy — no auth (used as <img src>), at /img/image-proxy
 app.use('/cabinet', authenticate, cabinetRouter);
 app.use('/cabinet/interactions', authenticate, interactionsRouter);
 app.use('/chat', authenticate, chatRouter);

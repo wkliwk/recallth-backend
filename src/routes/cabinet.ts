@@ -629,10 +629,12 @@ Rules:
     );
 
     // Wrap image URLs through our proxy to avoid CORS/Referer/UA issues
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const proto = req.get('x-forwarded-proto') || req.protocol;
+    const host = req.get('host');
+    const baseUrl = `${proto}://${host}`;
     for (const p of products) {
       if (p.imageUrl && typeof p.imageUrl === 'string') {
-        p.imageUrl = `${baseUrl}/cabinet/image-proxy?url=${encodeURIComponent(p.imageUrl as string)}`;
+        p.imageUrl = `${baseUrl}/img/image-proxy?url=${encodeURIComponent(p.imageUrl as string)}`;
       }
     }
 
