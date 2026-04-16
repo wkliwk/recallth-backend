@@ -579,7 +579,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     const { date } = req.query as { date?: string };
     const targetDate = typeof date === 'string' && DATE_REGEX.test(date) ? date : todayString();
 
-    const entries = await MealEntry.find({ userId, date: targetDate }).sort({ createdAt: 1 }).lean();
+    const entries = await MealEntry.find({ userId, date: targetDate }).sort({ createdAt: -1 }).lean();
     res.json({ success: true, data: entries, error: null });
   } catch (err) {
     console.error('[GET /nutrition]', err);
