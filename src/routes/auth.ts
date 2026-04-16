@@ -107,6 +107,25 @@ router.post('/set-password', authenticate, async (req: AuthRequest, res: Respons
   res.json({ success: true, data: null, error: null });
 });
 
+// GET /auth/me
+router.get('/me', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  const user = await User.findById(req.userId);
+  if (!user) {
+    res.status(404).json({ success: false, data: null, error: 'User not found' });
+    return;
+  }
+  res.json({
+    success: true,
+    data: {
+      userId: user._id,
+      email: user.email,
+      hasPassword: !!user.passwordHash,
+      googleLinked: !!user.googleId,
+    },
+    error: null,
+  });
+});
+
 // POST /auth/link-google
 router.post('/link-google', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   const { googleToken } = req.body;
