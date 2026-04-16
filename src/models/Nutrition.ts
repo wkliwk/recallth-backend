@@ -116,3 +116,42 @@ export const UserNutritionCategory = mongoose.model<IUserNutritionCategory>(
   'UserNutritionCategory',
   UserNutritionCategorySchema
 );
+
+// ─── UserNutritionCustomConfig model ──────────────────────────────────────
+
+export interface IUserNutritionCustomConfig extends Document {
+  userId: Types.ObjectId;
+  nutrients: string[];
+  goals: Map<string, number>;
+  updatedAt: Date;
+}
+
+const UserNutritionCustomConfigSchema = new Schema<IUserNutritionCustomConfig>(
+  {
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      unique: true,
+    },
+    nutrients: {
+      type: [String],
+      default: ['calories', 'protein', 'carbs', 'fat'],
+    },
+    goals: {
+      type: Map,
+      of: Number,
+      default: {},
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { timestamps: false }
+);
+
+export const UserNutritionCustomConfig = mongoose.model<IUserNutritionCustomConfig>(
+  'UserNutritionCustomConfig',
+  UserNutritionCustomConfigSchema
+);
