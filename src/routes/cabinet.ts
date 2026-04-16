@@ -1008,7 +1008,12 @@ Example: [{"name":"Gold Standard 100% Whey","brand":"Optimum Nutrition","type":"
         return { ...p, imageUrl: offUrl };
       })
     );
-    res.json({ success: true, data: enriched, error: null });
+    // Final safety net: strip any imageUrl that slipped through without passing the allowlist
+    const safe = enriched.map((p) => ({
+      ...p,
+      imageUrl: isImageUrl(String(p.imageUrl ?? '')) ? String(p.imageUrl) : '',
+    }));
+    res.json({ success: true, data: safe, error: null });
   } catch (err) {
     console.error('[POST /cabinet/ai-lookup]', err);
     res.status(500).json({ success: false, data: null, error: 'AI lookup failed' });
