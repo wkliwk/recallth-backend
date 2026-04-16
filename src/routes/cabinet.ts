@@ -536,15 +536,33 @@ Rules:
         if (candidateUrl.startsWith('//')) candidateUrl = `https:${candidateUrl}`;
         candidateUrl = candidateUrl.replace(/^http:\/\//, 'https://');
 
-        // Validate
+        // Validate with GET + Range to check real image bytes (not HTML error pages returning 200)
         const ctrl2 = new AbortController();
-        const timer2 = setTimeout(() => ctrl2.abort(), 3000);
-        const headRes = await fetch(candidateUrl, { method: 'HEAD', signal: ctrl2.signal, headers: { 'User-Agent': 'Mozilla/5.0' }, redirect: 'follow' });
+        const timer2 = setTimeout(() => ctrl2.abort(), 4000);
+        const valRes = await fetch(candidateUrl, {
+          signal: ctrl2.signal,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/*,*/*;q=0.8',
+            'Referer': new URL(candidateUrl).origin + '/',
+            'Range': 'bytes=0-3',
+          },
+          redirect: 'follow',
+        });
         clearTimeout(timer2);
-        const ct = headRes.headers.get('content-type') || '';
-        if (headRes.ok && ct.startsWith('image/')) {
-          scrapedImages.push(candidateUrl);
-          console.log(`[AI-Lookup] scraped image: ${candidateUrl}`);
+        const ct = valRes.headers.get('content-type') || '';
+        if (valRes.ok || valRes.status === 206) {
+          // Check content-type OR first bytes for image magic numbers
+          const buf = Buffer.from(await valRes.arrayBuffer());
+          const isImage = ct.startsWith('image/')
+            || (buf[0] === 0xFF && buf[1] === 0xD8) // JPEG
+            || (buf[0] === 0x89 && buf[1] === 0x50) // PNG
+            || (buf[0] === 0x52 && buf[1] === 0x49) // RIFF (WebP)
+            || (buf[0] === 0x47 && buf[1] === 0x49); // GIF
+          if (isImage) {
+            scrapedImages.push(candidateUrl);
+            console.log(`[AI-Lookup] scraped image: ${candidateUrl}`);
+          }
         }
       } catch { /* skip */ }
     }
@@ -558,7 +576,7 @@ Rules:
       }
     }
 
-    // Fallback: for products still without image, try Open Food Facts
+    // Fallback 1: Open Food Facts
     await Promise.all(
       products.map(async (p) => {
         if (p.imageUrl) return;
@@ -579,6 +597,44 @@ Rules:
         } catch { /* skip */ }
       })
     );
+
+    // Fallback 2: iHerb search (stable CDN images)
+    await Promise.all(
+      products.map(async (p) => {
+        if (p.imageUrl) return;
+        try {
+          const q = encodeURIComponent(`${p.brand || ''} ${p.name || ''}`.trim());
+          const searchUrl = `https://www.iherb.com/search?kw=${q}`;
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 5000);
+          const resp = await fetch(searchUrl, {
+            signal: ctrl.signal,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html',
+            },
+          });
+          clearTimeout(t);
+          if (!resp.ok) return;
+          const html = await resp.text();
+          // iHerb product images are on cloudinary or their CDN
+          const imgMatch = html.match(/https:\/\/cloudinary\.images-iherb\.com\/image\/upload\/[^"'\s]+/i)
+            || html.match(/https:\/\/s3\.images-iherb\.com\/[^"'\s]+\.(?:jpg|png|webp)/i);
+          if (imgMatch?.[0]) {
+            p.imageUrl = imgMatch[0];
+            console.log(`[AI-Lookup] iHerb fallback image: ${imgMatch[0]}`);
+          }
+        } catch { /* skip */ }
+      })
+    );
+
+    // Wrap image URLs through our proxy to avoid CORS/Referer/UA issues
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    for (const p of products) {
+      if (p.imageUrl && typeof p.imageUrl === 'string') {
+        p.imageUrl = `${baseUrl}/cabinet/image-proxy?url=${encodeURIComponent(p.imageUrl as string)}`;
+      }
+    }
 
     res.json({ success: true, error: null, data: products });
   } catch (err) {
@@ -1763,6 +1819,57 @@ Rules:
   } catch (err) {
     console.error('[GET /cabinet/:id/research]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to generate research' });
+  }
+});
+
+// ─── Image proxy (no auth required — used as <img src>) ─────────────────────
+export const imageProxyRouter = Router();
+
+imageProxyRouter.get('/image-proxy', async (req: Request, res: Response): Promise<void> => {
+  const url = req.query.url as string;
+  if (!url || !url.startsWith('https://')) {
+    res.status(400).json({ success: false, error: 'url query param required (https only)' });
+    return;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const upstream = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': new URL(url).origin + '/',
+      },
+      redirect: 'follow',
+    });
+    clearTimeout(timer);
+
+    if (!upstream.ok || !upstream.body) {
+      res.status(upstream.status === 404 ? 404 : 502).end();
+      return;
+    }
+
+    const ct = upstream.headers.get('content-type') || 'image/jpeg';
+    res.setHeader('Content-Type', ct);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    const cl = upstream.headers.get('content-length');
+    if (cl) res.setHeader('Content-Length', cl);
+
+    // Stream the response
+    const reader = upstream.body.getReader();
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); return; }
+        res.write(value);
+      }
+    };
+    await pump();
+  } catch {
+    res.status(502).end();
   }
 });
 

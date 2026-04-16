@@ -7,7 +7,7 @@ import healthRouter from './routes/health';
 import authRouter from './routes/auth';
 import authGoogleRouter from './routes/authGoogle';
 import profileRouter from './routes/profile';
-import cabinetRouter from './routes/cabinet';
+import cabinetRouter, { imageProxyRouter } from './routes/cabinet';
 import chatRouter from './routes/chat';
 import interactionsRouter from './routes/interactions';
 import historyRouter from './routes/history';
@@ -42,6 +42,7 @@ app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
 app.use('/profile/auto-extracted', authenticate, extractionReviewRouter);
+app.use('/cabinet', imageProxyRouter);  // image proxy — no auth (used as <img src>)
 app.use('/cabinet', authenticate, cabinetRouter);
 app.use('/cabinet/interactions', authenticate, interactionsRouter);
 app.use('/chat', authenticate, chatRouter);
