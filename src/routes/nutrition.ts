@@ -10,6 +10,7 @@ import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } fro
 import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
+import { offLookup } from '../services/offLookup';
 
 const router = Router();
 
@@ -129,11 +130,34 @@ Example for a single item:
     }
     const { foods, suggestions } = parseResult;
 
+    // Enrich foods with OFF nutrition data where available (parallel, non-blocking)
+    type FoodItem = { name?: string; quantity?: number; unit?: string; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
+    const enrichedFoods = await Promise.all(
+      (foods as FoodItem[]).map(async (item) => {
+        if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
+        try {
+          const off = await offLookup(item.name, item.quantity, item.unit);
+          if (off) {
+            return {
+              ...item,
+              nutrients: { ...item.nutrients, ...off.scaledNutrients },
+              estimated: false,
+              source: 'off',
+              offProductName: off.productName,
+            };
+          }
+        } catch {
+          // OFF failure is non-fatal — keep AI estimate
+        }
+        return { ...item, source: 'ai_estimated' };
+      })
+    );
+
     const usage = result.response.usageMetadata;
     const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-parse`);
 
-    res.json({ success: true, data: { foods, suggestions }, aiUsage, error: null });
+    res.json({ success: true, data: { foods: enrichedFoods, suggestions }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI food parsing failed' });
