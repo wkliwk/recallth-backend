@@ -349,6 +349,38 @@ router.get('/recommendations', async (req: AuthRequest, res: Response): Promise<
   }
 });
 
+// ─── GET /nutrition/days — dates with entries for a month (#133) ─────────
+
+router.get('/days', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { year, month } = req.query as { year?: string; month?: string };
+
+    if (
+      typeof year !== 'string' || !/^\d{4}$/.test(year) ||
+      typeof month !== 'string' || !/^\d{2}$/.test(month)
+    ) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: 'year (YYYY) and month (MM) are required',
+      });
+      return;
+    }
+
+    const prefix = `${year}-${month}`;
+    const days = await MealEntry.distinct('date', {
+      userId,
+      date: { $regex: `^${prefix}` },
+    });
+
+    res.json({ success: true, data: (days as string[]).sort(), error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/days]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to get days with entries' });
+  }
+});
+
 // ─── GET /nutrition — list meal entries for a date ────────────────────────
 
 router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
