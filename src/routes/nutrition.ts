@@ -6,6 +6,7 @@ import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/N
 import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
 import { CATEGORY_TARGETS } from '../utils/nutritionTargets';
+import { buildAiUsage } from '../utils/aiUsage';
 
 const router = Router();
 
@@ -66,7 +67,11 @@ Example: [{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":
       return;
     }
 
-    res.json({ success: true, data: { foods }, error: null });
+    const usage = result.response.usageMetadata;
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-parse`);
+
+    res.json({ success: true, data: { foods }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI food parsing failed' });
@@ -256,7 +261,11 @@ All nutrient values should be per serving (not per 100g). Return ONLY valid JSON
       return;
     }
 
-    res.json({ success: true, data: { food }, error: null });
+    const usage = result.response.usageMetadata;
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-ocr`);
+
+    res.json({ success: true, data: { food }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/ocr]', err);
     res.status(500).json({ success: false, data: null, error: 'OCR failed' });
