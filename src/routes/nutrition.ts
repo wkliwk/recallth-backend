@@ -73,6 +73,196 @@ Example: [{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":
   }
 });
 
+// ─── Open Food Facts types ────────────────────────────────────────────────
+
+interface OFFProduct {
+  code?: string;
+  product_name?: string;
+  brands?: string;
+  serving_size?: string;
+  image_url?: string;
+  nutriments?: Record<string, number>;
+}
+
+interface OFFResponse {
+  products?: OFFProduct[];
+}
+
+interface FoodProduct {
+  id: string;
+  name: string;
+  brand: string;
+  servingSize: string;
+  source: 'database';
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  sugar: number | null;
+  fiber: number | null;
+  sodium: number | null;
+  imageUrl: string | null;
+}
+
+interface ExtractedFood {
+  name: string | null;
+  brand: string | null;
+  servingSize: string | null;
+  calories: number | null;
+  protein: number | null;
+  carbs: number | null;
+  fat: number | null;
+  sugar: number | null;
+  fiber: number | null;
+  sodium: number | null;
+}
+
+function roundOrNull(value: number | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  return Math.round(value * 10) / 10;
+}
+
+function pickNutrient(
+  nutriments: Record<string, number> | undefined,
+  servingKey: string,
+  per100Key: string
+): number | null {
+  if (!nutriments) return null;
+  const serving = nutriments[servingKey];
+  if (serving !== undefined) return roundOrNull(serving);
+  const per100 = nutriments[per100Key];
+  if (per100 !== undefined) return roundOrNull(per100);
+  return null;
+}
+
+// ─── GET /nutrition/search — Open Food Facts product search ───────────────
+
+router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { q } = req.query as { q?: string };
+
+    if (typeof q !== 'string' || q.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'q (search query) is required' });
+      return;
+    }
+
+    const OFF_URL =
+      `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(q.trim())}` +
+      `&search_simple=1&action=process&json=1&page_size=10` +
+      `&fields=product_name,brands,serving_size,nutriments,image_url`;
+
+    let offData: OFFResponse = {};
+
+    try {
+      const offRes = await fetch(OFF_URL, {
+        headers: { 'User-Agent': 'Recallth/1.0 (health@recallth.app)' },
+      });
+      if (offRes.ok) {
+        offData = (await offRes.json()) as OFFResponse;
+      }
+    } catch (fetchErr) {
+      console.warn('[GET /nutrition/search] OFF fetch failed:', fetchErr);
+    }
+
+    const rawProducts: OFFProduct[] = offData.products ?? [];
+
+    const products: FoodProduct[] = rawProducts
+      .filter((p) => typeof p.product_name === 'string' && p.product_name.trim().length > 0)
+      .map((p) => {
+        const nutriments = p.nutriments;
+        const sodiumSrv = nutriments?.['sodium_serving'];
+        let sodium: number | null = null;
+        if (sodiumSrv !== undefined) {
+          sodium = roundOrNull(sodiumSrv < 1 ? sodiumSrv * 1000 : sodiumSrv);
+        }
+
+        const brands = typeof p.brands === 'string' ? p.brands : '';
+        const firstBrand = brands.split(',')[0]?.trim() ?? '';
+
+        return {
+          id: p.code ?? '',
+          name: (p.product_name ?? '').trim(),
+          brand: firstBrand,
+          servingSize: typeof p.serving_size === 'string' ? p.serving_size : '',
+          source: 'database' as const,
+          calories: pickNutrient(nutriments, 'energy-kcal_serving', 'energy-kcal_100g'),
+          protein: pickNutrient(nutriments, 'proteins_serving', 'proteins_100g'),
+          carbs: pickNutrient(nutriments, 'carbohydrates_serving', 'carbohydrates_100g'),
+          fat: pickNutrient(nutriments, 'fat_serving', 'fat_100g'),
+          sugar: roundOrNull(nutriments?.['sugars_serving']),
+          fiber: roundOrNull(nutriments?.['fiber_serving']),
+          sodium,
+          imageUrl: typeof p.image_url === 'string' ? p.image_url : null,
+        };
+      });
+
+    res.json({ success: true, data: { products, source: 'openfoodfacts' }, error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/search]', err);
+    res.status(500).json({ success: false, data: null, error: 'Food search failed' });
+  }
+});
+
+// ─── POST /nutrition/ocr — Gemini vision nutrition label extraction ─────────
+
+router.post('/ocr', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { image, mimeType } = req.body as { image?: unknown; mimeType?: unknown };
+
+    if (typeof image !== 'string' || image.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'image (base64 string) is required' });
+      return;
+    }
+
+    const resolvedMimeType =
+      typeof mimeType === 'string' && mimeType.trim().length > 0 ? mimeType.trim() : 'image/jpeg';
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a nutrition label reader. Extract all nutrition information from this food packaging image.
+Return a JSON object with these fields (use null for any field not found on the label):
+{
+  "name": "product name if visible",
+  "brand": "brand name if visible",
+  "servingSize": "serving size text (e.g. '30g', '1 cup')",
+  "calories": number or null,
+  "protein": number or null,
+  "carbs": number or null,
+  "fat": number or null,
+  "sugar": number or null,
+  "fiber": number or null,
+  "sodium": number or null
+}
+All nutrient values should be per serving (not per 100g). Return ONLY valid JSON, no markdown.`;
+
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          mimeType: resolvedMimeType,
+          data: image.trim(),
+        },
+      },
+    ]);
+
+    const raw = result.response.text().trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+
+    let food: ExtractedFood;
+    try {
+      food = JSON.parse(raw) as ExtractedFood;
+    } catch {
+      res.json({ success: false, data: null, error: 'Could not read nutrition label' });
+      return;
+    }
+
+    res.json({ success: true, data: { food }, error: null });
+  } catch (err) {
+    console.error('[POST /nutrition/ocr]', err);
+    res.status(500).json({ success: false, data: null, error: 'OCR failed' });
+  }
+});
+
 // ─── GET /nutrition/summary — daily nutrient totals ───────────────────────
 // Must be defined before GET /nutrition/:id to avoid route conflict
 
