@@ -168,6 +168,21 @@ function findNutrient(nutrients: USDAFoodNutrient[] | undefined, name: string): 
 
 // ─── GET /nutrition/search — USDA FoodData Central product search ──────────
 
+async function toEnglishIfChinese(query: string): Promise<string> {
+  if (!/[\u4e00-\u9fff]/.test(query)) return query;
+  try {
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(
+      `Translate this food name to English. Return only the English food name, nothing else: "${query}"`
+    );
+    const translated = result.response.text().trim();
+    return translated.length > 0 ? translated : query;
+  } catch {
+    return query;
+  }
+}
+
 router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { q } = req.query as { q?: string };
@@ -184,8 +199,10 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
+    const searchTerm = await toEnglishIfChinese(q.trim());
+
     const USDA_URL =
-      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(q.trim())}` +
+      `https://api.nal.usda.gov/fdc/v1/foods/search?query=${encodeURIComponent(searchTerm)}` +
       `&pageSize=10&api_key=${apiKey}`;
 
     let usdaData: USDAResponse = {};
