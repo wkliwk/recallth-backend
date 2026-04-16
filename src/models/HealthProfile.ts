@@ -2,11 +2,14 @@ import mongoose, { Document, Schema, Types } from 'mongoose';
 
 // ─── Sub-document interfaces ───────────────────────────────────────────────
 
+export type ActivityLevel = 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
+
 export interface IBody {
   height?: number; // cm
   weight?: number; // kg
   age?: number;
   sex?: 'male' | 'female' | 'other' | 'prefer_not_to_say';
+  activityLevel?: ActivityLevel;
   bodyCompositionGoals?: string;
 }
 
@@ -89,6 +92,7 @@ const BodySchema = new Schema<IBody>(
     weight: { type: Number },
     age: { type: Number },
     sex: { type: String, enum: ['male', 'female', 'other', 'prefer_not_to_say'] },
+    activityLevel: { type: String, enum: ['sedentary', 'light', 'moderate', 'active', 'very_active'] },
     bodyCompositionGoals: { type: String },
   },
   { _id: false }

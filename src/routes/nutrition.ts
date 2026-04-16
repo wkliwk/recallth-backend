@@ -5,7 +5,8 @@ import { AuthRequest } from '../middleware/auth';
 import { MealEntry, UserNutritionCategory, NutritionCategory } from '../models/Nutrition';
 import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
-import { CATEGORY_TARGETS } from '../utils/nutritionTargets';
+import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } from '../utils/nutritionTargets';
+import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 
 const router = Router();
 
@@ -289,12 +290,42 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
       }
     }
 
-    // Load category for this user (default: gym)
-    const categoryDoc = await UserNutritionCategory.findOne({ userId }).lean();
-    const category: NutritionCategory = categoryDoc?.category ?? 'gym';
-    const targets = CATEGORY_TARGETS[category];
+    // Load category + body stats in parallel
+    const [categoryDoc, profileDoc] = await Promise.all([
+      UserNutritionCategory.findOne({ userId }).lean(),
+      HealthProfile.findOne({ userId }, { 'body.weight': 1, 'body.height': 1, 'body.age': 1, 'body.sex': 1, 'body.activityLevel': 1 }).lean(),
+    ]);
 
-    // Build response: only nutrients that have a target defined
+    const category: NutritionCategory = categoryDoc?.category ?? 'gym';
+
+    // Attempt personalised targets if all body stats are present
+    const body = profileDoc?.body;
+    const canPersonalise =
+      body?.weight != null &&
+      body?.height != null &&
+      body?.age != null &&
+      (body?.sex === 'male' || body?.sex === 'female') &&
+      body?.activityLevel != null;
+
+    let targets = CATEGORY_TARGETS[category];
+    let targetBasis: 'personalised' | 'default' = 'default';
+    let formula: PersonalisedFormula | null = null;
+
+    if (canPersonalise) {
+      const result = computePersonalisedTargets(
+        category,
+        body!.weight!,
+        body!.height!,
+        body!.age!,
+        body!.sex as 'male' | 'female',
+        body!.activityLevel as ActivityLevel
+      );
+      targets = result.targets;
+      formula = result.formula;
+      targetBasis = 'personalised';
+    }
+
+    // Build response nutrients
     const nutrients: Record<
       string,
       { actual: number; target: number; unit: string; type: 'min' | 'max' }
@@ -309,7 +340,7 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
       };
     }
 
-    res.json({ success: true, data: { date: targetDate, category, nutrients }, error: null });
+    res.json({ success: true, data: { date: targetDate, category, nutrients, targetBasis, formula }, error: null });
   } catch (err) {
     console.error('[GET /nutrition/summary]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to get nutrition summary' });
