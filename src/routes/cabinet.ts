@@ -918,21 +918,19 @@ function isImageUrl(url: string): boolean {
   if (!url) return false;
   try {
     const u = new URL(url);
-    // Must be https
     if (u.protocol !== 'https:') return false;
-    // Ends in a known image extension
-    if (/\.(jpg|jpeg|png|webp|gif)(\?.*)?$/i.test(u.pathname)) return true;
-    // Known image CDN hostnames
+    // Only accept hostnames that are confirmed to serve CORS-safe images.
+    // Brand website CDNs (pvl.ca, optimumnutrition.com, etc.) block cross-origin
+    // image loads with ERR_BLOCKED_BY_ORB — extension alone is not enough.
     const host = u.hostname;
-    if (
+    return (
       host === 'm.media-amazon.com' ||
       host === 'images-na.ssl-images-amazon.com' ||
       host === 'images.iherb.com' ||
       host === 'images.openfoodfacts.org' ||
       host.endsWith('.cloudinary.com') ||
-      host.endsWith('.shopify.com') && u.pathname.includes('/products/')
-    ) return true;
-    return false;
+      host === 'cdn.shopify.com'
+    );
   } catch {
     return false;
   }
