@@ -202,7 +202,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     res.status(404).json({ success: false, data: null, error: 'Family member not found' });
     return;
   }
-  const query: Record<string, unknown> = { userId: scopedUserId };
+  const query: Record<string, unknown> = { userId: scopedUserId, active: true };
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
   if (req.query.type) {
