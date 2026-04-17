@@ -164,7 +164,14 @@ Example for a set meal with drink choice:
 {"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","grams":160,"estimated":true,"nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","grams":55,"estimated":true,"nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","grams":250,"estimated":true,"nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","grams":250,"estimated":true,"nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","grams":250,"estimated":true,"nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
 
 Example for a single item:
-{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","grams":350,"estimated":true,"nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
+{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","grams":350,"estimated":true,"nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}
+
+Example for a fresh fruit (simple, high-carb, near-zero fat):
+Input: "香蕉"
+{"foods":[{"name":"香蕉","quantity":1,"unit":"隻","grams":120,"estimated":true,"nutrients":{"calories":107,"protein":1.3,"carbs":27,"fat":0.4,"sugar":14,"fiber":3.1}}],"suggestions":[]}
+
+IMPORTANT — Macro accuracy for simple foods:
+For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro, fat will be very low (< 1g per 100g), and protein will be low (1–3g per 100g). Do NOT apply composite-dish macro patterns to simple whole foods.`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
@@ -175,6 +182,18 @@ Example for a single item:
       return;
     }
     const { foods, suggestions } = parseResult;
+
+    // Sanity-check AI macro consistency: protein*4 + carbs*4 + fat*9 should roughly equal calories.
+    // Log a warning if the discrepancy is > 2x — indicates AI hallucination for this item.
+    type FoodForCheck = { name?: string; nutrients?: { calories?: number; protein?: number; carbs?: number; fat?: number } };
+    for (const food of foods as FoodForCheck[]) {
+      const n = food.nutrients;
+      if (!n?.calories || (!n.protein && !n.carbs && !n.fat)) continue;
+      const macroKcal = (n.protein ?? 0) * 4 + (n.carbs ?? 0) * 4 + (n.fat ?? 0) * 9;
+      if (macroKcal > n.calories * 2 || (macroKcal < n.calories * 0.3 && macroKcal > 5)) {
+        console.warn(`[nutrition/parse] Macro inconsistency for "${food.name}": calories=${n.calories}, macroKcal=${macroKcal.toFixed(1)} (protein=${n.protein}g carbs=${n.carbs}g fat=${n.fat}g)`);
+      }
+    }
 
     // Enrich foods: community → OFF → AI estimate (parallel per item)
     type FoodItem = { name?: string; quantity?: number; unit?: string; nutrients?: Record<string, number>; estimated?: boolean; source?: string };

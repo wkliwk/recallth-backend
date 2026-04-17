@@ -10,6 +10,7 @@ const UNIT_WEIGHT_G: Record<string, number> = {
   盒: 300,
   罐: 330,
   個: 120,
+  隻: 120,  // counter for banana, egg, etc. (~120g average banana)
   件: 100,
   塊: 100,
   片: 30,
@@ -79,29 +80,65 @@ const OFF_HOSTS = [
   'https://world.openfoodfacts.org',
 ];
 
+// Common Chinese → English translations for fresh produce / whole foods.
+// Used as a fallback when the Chinese name returns no OFF match.
+const CHINESE_TO_ENGLISH_FALLBACK: Record<string, string> = {
+  香蕉: 'banana',
+  蘋果: 'apple',
+  橙: 'orange',
+  橙子: 'orange',
+  草莓: 'strawberry',
+  葡萄: 'grape',
+  西瓜: 'watermelon',
+  芒果: 'mango',
+  雞蛋: 'egg',
+  蛋: 'egg',
+  牛奶: 'milk',
+  豆腐: 'tofu',
+  白飯: 'steamed rice',
+  糙米飯: 'brown rice',
+  燕麥: 'oats',
+  麵包: 'bread',
+  雞胸肉: 'chicken breast',
+  三文魚: 'salmon',
+  吞拿魚: 'tuna',
+  花椰菜: 'broccoli',
+  西蘭花: 'broccoli',
+  菠菜: 'spinach',
+  番茄: 'tomato',
+  紅蘿蔔: 'carrot',
+};
+
 async function fetchFromOff(query: string): Promise<{ productName: string; per100g: NutrientsPer100g } | null> {
-  for (const host of OFF_HOSTS) {
-    try {
-      const url = `${host}/api/v2/search?search_terms=${encodeURIComponent(query)}&page_size=1&fields=product_name,nutriments&json=true`;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(4000),
-        headers: { 'User-Agent': 'Recallth/1.0 (nutrition lookup; contact@recallth.com)' },
-      });
+  // Build list of queries to try: original name first, then English fallback if available
+  const queries = [query];
+  const englishFallback = CHINESE_TO_ENGLISH_FALLBACK[query.trim()];
+  if (englishFallback) queries.push(englishFallback);
 
-      if (!res.ok) continue;
+  for (const q of queries) {
+    for (const host of OFF_HOSTS) {
+      try {
+        const url = `${host}/api/v2/search?search_terms=${encodeURIComponent(q)}&page_size=1&fields=product_name,nutriments&json=true`;
+        const res = await fetch(url, {
+          signal: AbortSignal.timeout(4000),
+          headers: { 'User-Agent': 'Recallth/1.0 (nutrition lookup; contact@recallth.com)' },
+        });
 
-      const data = await res.json() as { products?: Array<{ product_name?: string; nutriments?: Record<string, unknown> }> };
-      const product = data.products?.[0];
-      if (!product?.nutriments || !product.product_name) continue;
+        if (!res.ok) continue;
 
-      const per100g = extractNutrients(product.nutriments);
-      // Require at least calories to consider a valid match
-      if (per100g.calories === undefined) continue;
+        const data = await res.json() as { products?: Array<{ product_name?: string; nutriments?: Record<string, unknown> }> };
+        const product = data.products?.[0];
+        if (!product?.nutriments || !product.product_name) continue;
 
-      return { productName: product.product_name, per100g };
-    } catch {
-      // timeout, network error, JSON parse error — try next host
-      continue;
+        const per100g = extractNutrients(product.nutriments);
+        // Require at least calories to consider a valid match
+        if (per100g.calories === undefined) continue;
+
+        return { productName: product.product_name, per100g };
+      } catch {
+        // timeout, network error, JSON parse error — try next host
+        continue;
+      }
     }
   }
   return null;
