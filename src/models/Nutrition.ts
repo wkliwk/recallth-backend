@@ -6,6 +6,7 @@ export interface IFoodItem {
   name: string;
   quantity: number;
   unit: string;
+  grams?: number;
   nutrients: Map<string, number>;
 }
 
@@ -14,6 +15,7 @@ const FoodItemSchema = new Schema<IFoodItem>(
     name: { type: String, required: true, trim: true },
     quantity: { type: Number, required: true },
     unit: { type: String, required: true, trim: true },
+    grams: { type: Number },
     nutrients: {
       type: Map,
       of: Number,
