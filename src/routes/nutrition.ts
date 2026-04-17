@@ -83,18 +83,21 @@ The input may be in English, Cantonese, or Traditional Chinese (Hong Kong contex
 Food description: "${text.trim()}"
 ${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
 
-IMPORTANT — Vague HK portion descriptors:
-The user may describe how much they ate using vague Cantonese phrases. You MUST scale the nutrition proportionally — do NOT default to a full standard serving if a smaller amount is described.
-Map these descriptors to an estimated fraction of a standard serving and scale ALL nutrient values accordingly:
-- 一兩啖 / 一啖兩啖 (a bite or two) → ~10–15% of a standard serving
-- 幾啖 (a few bites) → ~20–25%
-- 少少 / 少少少 (a little bit) → ~15–20%
-- 少啲 / 少一點 (a bit less than usual) → ~70–80%
-- 半份 / 一半 (half portion) → ~50%
-- 細份 / 細碗 / 細碟 (small portion) → ~60–70%
-- 大份 / 大碗 / 大碟 (large portion) → ~130–150%
-- 多啲 / 加多啲 (a bit more) → ~120–130%
-When a vague descriptor is used, reflect the scaled quantity in the unit (e.g. unit: "份 (約一兩啖)") and set estimated: true.
+IMPORTANT — Vague HK portion descriptors (proportional scaling):
+The user may describe how much they ate using vague Cantonese phrases. Follow this two-step process:
+STEP 1 — Establish the full standard serving nutrition for the food (e.g. 韓式泡菜炒飯 full serving ≈ 350g, 480 kcal, 12g protein, 68g carbs, 14g fat).
+STEP 2 — Apply the portion fraction to EVERY nutrient uniformly. If fraction is 10%, multiply ALL values by 0.10.
+Never scale calories down while keeping macros high — the math must be consistent: protein×4 + carbs×4 + fat×9 ≈ total calories (±10%).
+Portion fractions:
+- 一啖 / 一兩啖 / 一啖兩啖 (one or two bites) → ~10%
+- 幾啖 (a few bites) → ~20%
+- 少少 (a little bit) → ~15%
+- 少啲 (a bit less) → ~75%
+- 半份 / 一半 (half) → ~50%
+- 細份 / 細碗 / 細碟 (small) → ~65%
+- 大份 / 大碗 / 大碟 (large) → ~140%
+- 多啲 (a bit more) → ~125%
+Reflect the descriptor in the unit (e.g. "份 (約一啖)") and set estimated: true.
 
 IMPORTANT — Compound dish splitting:
 If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
@@ -122,9 +125,12 @@ Each item in both arrays must have:
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
 
-Example for a vague portion descriptor (scale nutrition down proportionally):
-Input: "韓式泡菜炒飯 一兩啖"
-{"foods":[{"name":"韓式泡菜炒飯","quantity":1,"unit":"份 (約一兩啖)","grams":35,"estimated":true,"nutrients":{"calories":40,"protein":1.5,"carbs":5,"fat":1.5}}],"suggestions":[]}
+Example for a vague portion descriptor — two-step proportional scaling:
+Input: "韓式泡菜炒飯 一啖"
+Step 1 (full serving baseline): 350g, 480 kcal, protein 12g, carbs 68g, fat 14g
+Step 2 (×10% for 一啖): grams=35, calories=48, protein=1.2, carbs=6.8, fat=1.4
+Check: 1.2×4 + 6.8×4 + 1.4×9 = 4.8+27.2+12.6 = 44.6 ≈ 48 kcal ✓
+{"foods":[{"name":"韓式泡菜炒飯","quantity":1,"unit":"份 (約一啖)","grams":35,"estimated":true,"nutrients":{"calories":48,"protein":1.2,"carbs":6.8,"fat":1.4}}],"suggestions":[]}
 
 Example for a compound dish where user stated quantity (estimated: false for stated, estimated: true for unstated):
 Input: "雞扒炒烏冬 大概有10粒雞球左右"
