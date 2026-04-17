@@ -83,6 +83,19 @@ The input may be in English, Cantonese, or Traditional Chinese (Hong Kong contex
 Food description: "${text.trim()}"
 ${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
 
+IMPORTANT — Vague HK portion descriptors:
+The user may describe how much they ate using vague Cantonese phrases. You MUST scale the nutrition proportionally — do NOT default to a full standard serving if a smaller amount is described.
+Map these descriptors to an estimated fraction of a standard serving and scale ALL nutrient values accordingly:
+- 一兩啖 / 一啖兩啖 (a bite or two) → ~10–15% of a standard serving
+- 幾啖 (a few bites) → ~20–25%
+- 少少 / 少少少 (a little bit) → ~15–20%
+- 少啲 / 少一點 (a bit less than usual) → ~70–80%
+- 半份 / 一半 (half portion) → ~50%
+- 細份 / 細碗 / 細碟 (small portion) → ~60–70%
+- 大份 / 大碗 / 大碟 (large portion) → ~130–150%
+- 多啲 / 加多啲 (a bit more) → ~120–130%
+When a vague descriptor is used, reflect the scaled quantity in the unit (e.g. unit: "份 (約一兩啖)") and set estimated: true.
+
 IMPORTANT — Compound dish splitting:
 If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
 - Extract explicit quantities where stated (e.g., "10粒" → quantity: 10, unit: "粒"; "大概10粒" → quantity: 10)
@@ -107,6 +120,10 @@ Each item in both arrays must have:
 
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
+
+Example for a vague portion descriptor (scale nutrition down proportionally):
+Input: "韓式泡菜炒飯 一兩啖"
+{"foods":[{"name":"韓式泡菜炒飯","quantity":1,"unit":"份 (約一兩啖)","estimated":true,"nutrients":{"calories":40,"protein":1.5,"carbs":5,"fat":1.5}}],"suggestions":[]}
 
 Example for a compound dish where user stated quantity (estimated: false for stated, estimated: true for unstated):
 Input: "雞扒炒烏冬 大概有10粒雞球左右"
