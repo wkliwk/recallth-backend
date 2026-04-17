@@ -50,6 +50,44 @@ const DEFAULT_CUSTOM_GOALS: Record<string, number> = {
   fat: 65,
 };
 
+// ─── Vague portion descriptor detection ───────────────────────────────────
+// Returns { fraction, label, cleanText } if a vague descriptor is found,
+// otherwise null. All scaling is done server-side so the AI only ever
+// estimates a standard full serving.
+
+const PORTION_PATTERNS: { pattern: RegExp; fraction: number; label: string }[] = [
+  { pattern: /一兩啖|一啖兩啖/u,   fraction: 0.12, label: '約一兩啖' },
+  { pattern: /一啖/u,              fraction: 0.10, label: '約一啖'   },
+  { pattern: /幾啖/u,              fraction: 0.20, label: '約幾啖'   },
+  { pattern: /少少少/u,            fraction: 0.10, label: '少少少'   },
+  { pattern: /少少/u,              fraction: 0.15, label: '少少'     },
+  { pattern: /少啲|少一點/u,       fraction: 0.75, label: '少啲'     },
+  { pattern: /半份|一半/u,         fraction: 0.50, label: '半份'     },
+  { pattern: /細份|細碗|細碟/u,    fraction: 0.65, label: '細份'     },
+  { pattern: /大份|大碗|大碟/u,    fraction: 1.40, label: '大份'     },
+  { pattern: /多啲|加多啲/u,       fraction: 1.25, label: '多啲'     },
+];
+
+function detectPortionDescriptor(text: string): { fraction: number; label: string; cleanText: string } | null {
+  for (const { pattern, fraction, label } of PORTION_PATTERNS) {
+    if (pattern.test(text)) {
+      const cleanText = text.replace(pattern, '').trim();
+      return { fraction, label, cleanText };
+    }
+  }
+  return null;
+}
+
+function scaleNutrients(nutrients: Record<string, number>, fraction: number): Record<string, number> {
+  const scaled: Record<string, number> = {};
+  for (const [key, value] of Object.entries(nutrients)) {
+    if (typeof value === 'number') {
+      scaled[key] = Math.round(value * fraction * 10) / 10;
+    }
+  }
+  return scaled;
+}
+
 // ─── POST /nutrition/parse — AI food parsing ──────────────────────────────
 
 router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -61,6 +99,11 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
       res.status(400).json({ success: false, data: null, error: 'text is required' });
       return;
     }
+
+    // Detect vague portion descriptor — strip it from the AI query so the model
+    // estimates a standard full serving; we scale server-side after.
+    const portionMatch = detectPortionDescriptor(text.trim());
+    const aiText = portionMatch ? portionMatch.cleanText || text.trim() : text.trim();
 
     // Build category context string — for custom, include the user's tracked nutrients
     let categoryContext = '';
@@ -80,24 +123,8 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
     const prompt = `You are a nutrition expert for Hong Kong food. Parse the following food description and return structured nutrition data.
 The input may be in English, Cantonese, or Traditional Chinese (Hong Kong context). Recognise HK local food names and chain restaurants.
 
-Food description: "${text.trim()}"
+Food description: "${aiText}"
 ${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
-
-IMPORTANT — Vague HK portion descriptors (proportional scaling):
-The user may describe how much they ate using vague Cantonese phrases. Follow this two-step process:
-STEP 1 — Establish the full standard serving nutrition for the food (e.g. 韓式泡菜炒飯 full serving ≈ 350g, 480 kcal, 12g protein, 68g carbs, 14g fat).
-STEP 2 — Apply the portion fraction to EVERY nutrient uniformly. If fraction is 10%, multiply ALL values by 0.10.
-Never scale calories down while keeping macros high — the math must be consistent: protein×4 + carbs×4 + fat×9 ≈ total calories (±10%).
-Portion fractions:
-- 一啖 / 一兩啖 / 一啖兩啖 (one or two bites) → ~10%
-- 幾啖 (a few bites) → ~20%
-- 少少 (a little bit) → ~15%
-- 少啲 (a bit less) → ~75%
-- 半份 / 一半 (half) → ~50%
-- 細份 / 細碗 / 細碟 (small) → ~65%
-- 大份 / 大碗 / 大碟 (large) → ~140%
-- 多啲 (a bit more) → ~125%
-Reflect the descriptor in the unit (e.g. "份 (約一啖)") and set estimated: true.
 
 IMPORTANT — Compound dish splitting:
 If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
@@ -124,13 +151,6 @@ Each item in both arrays must have:
 
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
-
-Example for a vague portion descriptor — two-step proportional scaling:
-Input: "韓式泡菜炒飯 一啖"
-Step 1 (full serving baseline): 350g, 480 kcal, protein 12g, carbs 68g, fat 14g
-Step 2 (×10% for 一啖): grams=35, calories=48, protein=1.2, carbs=6.8, fat=1.4
-Check: 1.2×4 + 6.8×4 + 1.4×9 = 4.8+27.2+12.6 = 44.6 ≈ 48 kcal ✓
-{"foods":[{"name":"韓式泡菜炒飯","quantity":1,"unit":"份 (約一啖)","grams":35,"estimated":true,"nutrients":{"calories":48,"protein":1.2,"carbs":6.8,"fat":1.4}}],"suggestions":[]}
 
 Example for a compound dish where user stated quantity (estimated: false for stated, estimated: true for unstated):
 Input: "雞扒炒烏冬 大概有10粒雞球左右"
@@ -216,11 +236,28 @@ Example for a single item:
       })
     );
 
+    // If a vague portion descriptor was detected, scale ALL numeric nutrient values
+    // and grams server-side — deterministic, no AI hallucination possible.
+    type EnrichedFood = Record<string, unknown>;
+    const finalFoods: EnrichedFood[] = portionMatch
+      ? enrichedFoods.map((food) => {
+          const f = food as EnrichedFood;
+          const rawNutrients = f.nutrients as Record<string, number> | undefined;
+          return {
+            ...f,
+            unit: `${String(f.unit ?? '份')} (${portionMatch.label})`,
+            grams: f.grams != null ? Math.round(Number(f.grams) * portionMatch.fraction) : undefined,
+            estimated: true,
+            nutrients: rawNutrients ? scaleNutrients(rawNutrients, portionMatch.fraction) : rawNutrients,
+          };
+        })
+      : (enrichedFoods as EnrichedFood[]);
+
     const usage = result.response.usageMetadata;
     const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-parse`);
 
-    res.json({ success: true, data: { foods: enrichedFoods, suggestions }, aiUsage, error: null });
+    res.json({ success: true, data: { foods: finalFoods, suggestions }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI food parsing failed' });
