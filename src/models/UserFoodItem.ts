@@ -15,6 +15,7 @@ export interface IUserFoodItem extends Document {
   sodium: number | null;
   useCount: number;
   lastUsedAt: Date;
+  communityFoodItemRef?: Types.ObjectId; // linked community entry, if this is a personal override
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +36,7 @@ const UserFoodItemSchema = new Schema<IUserFoodItem>(
     sodium: { type: Number, default: null },
     useCount: { type: Number, default: 1 },
     lastUsedAt: { type: Date, default: Date.now },
+    communityFoodItemRef: { type: Schema.Types.ObjectId, ref: 'CommunityFoodItem' },
   },
   { timestamps: true }
 );

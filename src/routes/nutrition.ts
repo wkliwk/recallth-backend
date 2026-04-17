@@ -9,6 +9,10 @@ import { MODELS } from '../config/models';
 import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } from '../utils/nutritionTargets';
 import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
+import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
+import { offLookup } from '../services/offLookup';
+import { contributeToCommDB } from '../services/communityContribution';
+import { CommunityFoodItem } from '../models/CommunityFoodItem';
 
 const router = Router();
 
@@ -79,6 +83,12 @@ The input may be in English, Cantonese, or Traditional Chinese (Hong Kong contex
 Food description: "${text.trim()}"
 ${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
 
+IMPORTANT — Compound dish splitting:
+If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
+- Extract explicit quantities where stated (e.g., "10粒" → quantity: 10, unit: "粒"; "大概10粒" → quantity: 10)
+- Each component gets its own realistic nutrition estimate based on its quantity
+- Examples of compound dishes to split: 炒烏冬+雞球, 湯麵+叉燒, 飯+餸, fried noodles+topping
+
 IMPORTANT — Set meal detection:
 If the input is a set meal / combo (contains words like 餐, 套餐, set, combo, or references a known chain's meal deal), you MUST:
 1. List ALL fixed components of the set as confirmed items in "foods"
@@ -91,50 +101,102 @@ Return a JSON object with two keys:
 Each item in both arrays must have:
 - name: food name (keep original language)
 - quantity: numeric quantity
-- unit: serving unit (e.g. 杯, 份, g)
+- unit: serving unit (e.g. 杯, 份, 粒, g)
+- estimated: boolean — true if quantity was NOT explicitly stated by the user and you are using a standard HK portion; false if the user explicitly stated a number or size (e.g. "五粒", "10粒", "大份", "細碗")
 - nutrients: object with relevant values from: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg)
 
 Use realistic HK portion sizes and chain-specific nutrition data where known.
 Return ONLY valid JSON, no markdown, no explanation.
 
-Example for a set meal with drink choice:
-{"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
+Example for a compound dish where user stated quantity (estimated: false for stated, estimated: true for unstated):
+Input: "雞扒炒烏冬 大概有10粒雞球左右"
+{"foods":[{"name":"炒烏冬","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":420,"protein":12,"carbs":68,"fat":10}},{"name":"雞球","quantity":10,"unit":"粒","estimated":false,"nutrients":{"calories":300,"protein":28,"carbs":8,"fat":18}}],"suggestions":[]}
 
-Example for a non-set item:
-{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
+Example for a dish with no stated quantity (all estimated: true):
+Input: "雲吞麵"
+{"foods":[{"name":"雲吞麵 (麵底)","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":280,"protein":9,"carbs":52,"fat":4}},{"name":"鮮蝦雲吞","quantity":5,"unit":"粒","estimated":true,"nutrients":{"calories":120,"protein":8,"carbs":10,"fat":5}}],"suggestions":[]}
+
+Example for a set meal with drink choice:
+{"foods":[{"name":"麥當勞豬柳蛋漢堡","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":430,"protein":19,"carbs":35,"fat":24}},{"name":"麥當勞薯餅","quantity":1,"unit":"份","estimated":true,"nutrients":{"calories":140,"protein":1.5,"carbs":15,"fat":8}}],"suggestions":[{"name":"麥當勞咖啡","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":80,"protein":3,"carbs":10,"fat":3}},{"name":"麥當勞奶茶","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":90,"protein":3,"carbs":12,"fat":3}},{"name":"麥當勞熱朱古力","quantity":1,"unit":"杯","estimated":true,"nutrients":{"calories":120,"protein":4,"carbs":18,"fat":4}}]}
+
+Example for a single item:
+{"foods":[{"name":"叉燒飯","quantity":1,"unit":"碟","estimated":true,"nutrients":{"calories":650,"protein":28,"carbs":80,"fat":18}}],"suggestions":[]}`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
 
-    // Extract JSON object or array from response
-    const jsonMatch = text2.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    const parseResult = parseAiNutritionResponse(text2);
+    if (!parseResult) {
       res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
       return;
     }
+    const { foods, suggestions } = parseResult;
 
-    const parsed = JSON.parse(jsonMatch[0]) as unknown;
-    let foods: unknown[];
-    let suggestions: unknown[];
+    // Enrich foods: community → OFF → AI estimate (parallel per item)
+    type FoodItem = { name?: string; quantity?: number; unit?: string; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
+    const enrichedFoods = await Promise.all(
+      (foods as FoodItem[]).map(async (item) => {
+        if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
 
-    if (Array.isArray(parsed)) {
-      // Legacy array response — treat all as confirmed foods
-      foods = parsed;
-      suggestions = [];
-    } else if (parsed && typeof parsed === 'object') {
-      const obj = parsed as Record<string, unknown>;
-      foods = Array.isArray(obj.foods) ? obj.foods : [];
-      suggestions = Array.isArray(obj.suggestions) ? obj.suggestions : [];
-    } else {
-      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
-      return;
-    }
+        // 1. Community DB lookup
+        try {
+          const normalized = item.name.trim().toLowerCase();
+          const communityItem = await CommunityFoodItem.findOne({
+            $or: [
+              { name: { $regex: normalized, $options: 'i' } },
+              { aliases: { $regex: normalized, $options: 'i' } },
+            ],
+            status: { $in: ['community', 'verified'] },
+          }).lean();
+
+          if (communityItem) {
+            const p100 = communityItem.per100g;
+            return {
+              ...item,
+              nutrients: {
+                calories: p100.calories,
+                protein: p100.protein,
+                carbs: p100.carbs,
+                fat: p100.fat,
+                sugar: p100.sugar,
+                fiber: p100.fiber,
+                sodium: p100.sodium,
+              },
+              estimated: false,
+              source: 'community',
+              communityStatus: communityItem.status,
+              contributionCount: communityItem.contributionCount,
+            };
+          }
+        } catch {
+          // Community lookup failure is non-fatal
+        }
+
+        // 2. OFF lookup
+        try {
+          const off = await offLookup(item.name, item.quantity, item.unit);
+          if (off) {
+            return {
+              ...item,
+              nutrients: { ...item.nutrients, ...off.scaledNutrients },
+              estimated: false,
+              source: 'off',
+              offProductName: off.productName,
+            };
+          }
+        } catch {
+          // OFF failure is non-fatal — keep AI estimate
+        }
+
+        return { ...item, source: 'ai_estimated' };
+      })
+    );
 
     const usage = result.response.usageMetadata;
     const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
     console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=nutrition-parse`);
 
-    res.json({ success: true, data: { foods, suggestions }, aiUsage, error: null });
+    res.json({ success: true, data: { foods: enrichedFoods, suggestions }, aiUsage, error: null });
   } catch (err) {
     console.error('[POST /nutrition/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI food parsing failed' });
@@ -217,7 +279,48 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
-    // ── 2. Fall back to AI ────────────────────────────────────────────
+    // ── 2. Community DB lookup ────────────────────────────────────────
+    const communityItem = await CommunityFoodItem.findOne({
+      $or: [
+        { name: { $regex: normalized, $options: 'i' } },
+        { aliases: { $regex: normalized, $options: 'i' } },
+      ],
+      status: { $in: ['community', 'verified'] },
+    }).lean();
+
+    if (communityItem) {
+      const p100 = communityItem.per100g;
+      const products: FoodProduct[] = [
+        {
+          id: (communityItem._id as Types.ObjectId).toString(),
+          name: communityItem.name,
+          brand: '',
+          servingSize: '100g',
+          source: 'database' as const,
+          calories: roundOrNull(p100.calories),
+          protein: roundOrNull(p100.protein),
+          carbs: roundOrNull(p100.carbs),
+          fat: roundOrNull(p100.fat),
+          sugar: roundOrNull(p100.sugar),
+          fiber: roundOrNull(p100.fiber),
+          sodium: roundOrNull(p100.sodium),
+          imageUrl: null,
+        },
+      ];
+      res.json({
+        success: true,
+        data: {
+          products,
+          source: 'community',
+          contributionCount: communityItem.contributionCount,
+          status: communityItem.status,
+        },
+        error: null,
+      });
+      return;
+    }
+
+    // ── 3. Fall back to AI ────────────────────────────────────────────
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
@@ -872,7 +975,7 @@ router.get('/library', async (req: AuthRequest, res: Response): Promise<void> =>
 router.post('/library', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.userId as string;
-    const { name, brand, servingSize, calories, protein, carbs, fat, sugar, fiber, sodium } = req.body as {
+    const { name, brand, servingSize, calories, protein, carbs, fat, sugar, fiber, sodium, communityFoodItemRef } = req.body as {
       name?: unknown;
       brand?: unknown;
       servingSize?: unknown;
@@ -883,6 +986,7 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
       sugar?: unknown;
       fiber?: unknown;
       sodium?: unknown;
+      communityFoodItemRef?: unknown;
     };
 
     if (typeof name !== 'string' || name.trim().length === 0) {
@@ -893,25 +997,29 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
     const displayName = name.trim();
     const normalizedName = displayName.toLowerCase();
 
+    const setFields: Record<string, unknown> = {
+      displayName,
+      brand: typeof brand === 'string' ? brand.trim() : '',
+      servingSize: typeof servingSize === 'string' ? servingSize.trim() : '',
+      calories: typeof calories === 'number' ? calories : null,
+      protein: typeof protein === 'number' ? protein : null,
+      carbs: typeof carbs === 'number' ? carbs : null,
+      fat: typeof fat === 'number' ? fat : null,
+      sugar: typeof sugar === 'number' ? sugar : null,
+      fiber: typeof fiber === 'number' ? fiber : null,
+      sodium: typeof sodium === 'number' ? sodium : null,
+      lastUsedAt: new Date(),
+    };
+
+    // Link to community source when saving a personal override
+    if (typeof communityFoodItemRef === 'string' && Types.ObjectId.isValid(communityFoodItemRef)) {
+      setFields.communityFoodItemRef = new Types.ObjectId(communityFoodItemRef);
+    }
+
     // Upsert: if same normalised name exists, update nutrition data and increment useCount
     const item = await UserFoodItem.findOneAndUpdate(
       { userId, name: normalizedName },
-      {
-        $set: {
-          displayName,
-          brand: typeof brand === 'string' ? brand.trim() : '',
-          servingSize: typeof servingSize === 'string' ? servingSize.trim() : '',
-          calories: typeof calories === 'number' ? calories : null,
-          protein: typeof protein === 'number' ? protein : null,
-          carbs: typeof carbs === 'number' ? carbs : null,
-          fat: typeof fat === 'number' ? fat : null,
-          sugar: typeof sugar === 'number' ? sugar : null,
-          fiber: typeof fiber === 'number' ? fiber : null,
-          sodium: typeof sodium === 'number' ? sodium : null,
-          lastUsedAt: new Date(),
-        },
-        $inc: { useCount: 1 },
-      },
+      { $set: setFields, $inc: { useCount: 1 } },
       { upsert: true, new: true }
     );
 
@@ -919,6 +1027,62 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
   } catch (err) {
     console.error('[POST /nutrition/library]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to save to library' });
+  }
+});
+
+// ─── PATCH /nutrition/library/:id — update personal food item (override) ─────
+
+router.patch('/library/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const id = req.params.id as string;
+
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ success: false, data: null, error: 'Invalid id' });
+      return;
+    }
+
+    const item = await UserFoodItem.findById(id);
+    if (!item) {
+      res.status(404).json({ success: false, data: null, error: 'Not found' });
+      return;
+    }
+
+    if (item.userId.toString() !== userId) {
+      res.status(403).json({ success: false, data: null, error: 'Forbidden' });
+      return;
+    }
+
+    const { calories, protein, carbs, fat, sugar, fiber, sodium, servingSize, communityFoodItemRef } = req.body as {
+      calories?: unknown;
+      protein?: unknown;
+      carbs?: unknown;
+      fat?: unknown;
+      sugar?: unknown;
+      fiber?: unknown;
+      sodium?: unknown;
+      servingSize?: unknown;
+      communityFoodItemRef?: unknown;
+    };
+
+    const updates: Record<string, unknown> = {};
+    if (typeof calories  === 'number') updates.calories  = calories;
+    if (typeof protein   === 'number') updates.protein   = protein;
+    if (typeof carbs     === 'number') updates.carbs     = carbs;
+    if (typeof fat       === 'number') updates.fat       = fat;
+    if (typeof sugar     === 'number') updates.sugar     = sugar;
+    if (typeof fiber     === 'number') updates.fiber     = fiber;
+    if (typeof sodium    === 'number') updates.sodium    = sodium;
+    if (typeof servingSize === 'string') updates.servingSize = servingSize.trim();
+    if (typeof communityFoodItemRef === 'string' && Types.ObjectId.isValid(communityFoodItemRef)) {
+      updates.communityFoodItemRef = new Types.ObjectId(communityFoodItemRef);
+    }
+
+    const updated = await UserFoodItem.findByIdAndUpdate(id, { $set: updates }, { new: true });
+    res.json({ success: true, data: updated, error: null });
+  } catch (err) {
+    console.error('[PATCH /nutrition/library/:id]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to update library item' });
   }
 });
 
@@ -1013,6 +1177,27 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     }
 
     const entry = await MealEntry.create(entryData);
+
+    // Fire-and-forget: contribute each food item to the community DB (non-blocking)
+    const validFoods = Array.isArray(foods)
+      ? (foods as Array<Record<string, unknown>>).filter(
+          (f) =>
+            typeof f.name === 'string' &&
+            typeof f.quantity === 'number' &&
+            typeof f.unit === 'string' &&
+            f.nutrients != null &&
+            typeof f.nutrients === 'object',
+        )
+      : [];
+    for (const food of validFoods) {
+      contributeToCommDB(userId, {
+        name: food.name as string,
+        quantity: food.quantity as number,
+        unit: food.unit as string,
+        nutrients: food.nutrients as Record<string, number>,
+      }).catch(() => {/* swallowed — non-fatal */});
+    }
+
     res.status(201).json({ success: true, data: entry, error: null });
   } catch (err) {
     console.error('[POST /nutrition]', err);
