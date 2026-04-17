@@ -10,7 +10,7 @@ import { CATEGORY_TARGETS, computePersonalisedTargets, PersonalisedFormula } fro
 import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
-import { offLookup } from '../services/offLookup';
+import { wholeFoodsLookup } from '../services/wholeFoodsRef';
 import { contributeToCommDB } from '../services/communityContribution';
 import { CommunityFoodItem } from '../models/CommunityFoodItem';
 
@@ -195,13 +195,14 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
       }
     }
 
-    // Enrich foods: community → OFF → AI estimate (parallel per item)
-    type FoodItem = { name?: string; quantity?: number; unit?: string; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
+    // Enrich foods: community DB → curated whole-foods table → AI estimate (parallel per item)
+    // OFF (OpenFoodFacts) removed: its text-search API returns unrelated products for food descriptions.
+    type FoodItem = { name?: string; quantity?: number; unit?: string; grams?: number; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
     const enrichedFoods = await Promise.all(
       (foods as FoodItem[]).map(async (item) => {
         if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
 
-        // 1. Community DB lookup
+        // 1. Community DB lookup (user-contributed HK food data)
         try {
           const normalized = item.name.trim().toLowerCase();
           const communityItem = await CommunityFoodItem.findOne({
@@ -214,16 +215,19 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
 
           if (communityItem) {
             const p100 = communityItem.per100g;
+            const weightG = item.grams ?? 100;
+            const scale = weightG / 100;
+            const round1 = (v?: number | null) => v != null ? Math.round(v * scale * 10) / 10 : undefined;
             return {
               ...item,
               nutrients: {
-                calories: p100.calories,
-                protein: p100.protein,
-                carbs: p100.carbs,
-                fat: p100.fat,
-                sugar: p100.sugar,
-                fiber: p100.fiber,
-                sodium: p100.sodium,
+                calories: round1(p100.calories),
+                protein: round1(p100.protein),
+                carbs: round1(p100.carbs),
+                fat: round1(p100.fat),
+                sugar: round1(p100.sugar),
+                fiber: round1(p100.fiber),
+                sodium: round1(p100.sodium),
               },
               estimated: false,
               source: 'community',
@@ -235,20 +239,26 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
           // Community lookup failure is non-fatal
         }
 
-        // 2. OFF lookup
-        try {
-          const off = await offLookup(item.name, item.quantity, item.unit);
-          if (off) {
-            return {
-              ...item,
-              nutrients: { ...item.nutrients, ...off.scaledNutrients },
-              estimated: false,
-              source: 'off',
-              offProductName: off.productName,
-            };
-          }
-        } catch {
-          // OFF failure is non-fatal — keep AI estimate
+        // 2. Curated whole-foods reference table (USDA-sourced, deterministic)
+        const wholeFood = wholeFoodsLookup(item.name);
+        if (wholeFood) {
+          const weightG = item.grams ?? 100;
+          const scale = weightG / 100;
+          const round1 = (v?: number) => v !== undefined ? Math.round(v * scale * 10) / 10 : undefined;
+          return {
+            ...item,
+            nutrients: {
+              calories: round1(wholeFood.calories),
+              protein: round1(wholeFood.protein),
+              carbs: round1(wholeFood.carbs),
+              fat: round1(wholeFood.fat),
+              sugar: round1(wholeFood.sugar),
+              fiber: round1(wholeFood.fiber),
+              sodium: round1(wholeFood.sodium),
+            },
+            estimated: false,
+            source: 'reference',
+          };
         }
 
         return { ...item, source: 'ai_estimated' };
