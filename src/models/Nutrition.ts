@@ -125,6 +125,7 @@ export interface IUserNutritionCustomConfig extends Document {
   userId: Types.ObjectId;
   nutrients: string[];
   goals: Map<string, number>;
+  aiSetupDone: boolean;
   updatedAt: Date;
 }
 
@@ -144,6 +145,10 @@ const UserNutritionCustomConfigSchema = new Schema<IUserNutritionCustomConfig>(
       type: Map,
       of: Number,
       default: {},
+    },
+    aiSetupDone: {
+      type: Boolean,
+      default: false,
     },
     updatedAt: {
       type: Date,
