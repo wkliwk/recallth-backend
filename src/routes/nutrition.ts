@@ -575,13 +575,13 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
 
     // Attempt personalised targets if all body stats are present
     const body = profileDoc?.body;
-    const canPersonalise =
-      category !== 'custom' &&
+    const profileComplete =
       body?.weight != null &&
       body?.height != null &&
       body?.age != null &&
       (body?.sex === 'male' || body?.sex === 'female') &&
       body?.activityLevel != null;
+    const canPersonalise = category !== 'custom' && profileComplete;
 
     let targets = CATEGORY_TARGETS[category];
     let targetBasis: 'personalised' | 'default' = 'default';
@@ -611,7 +611,7 @@ router.get('/summary', async (req: AuthRequest, res: Response): Promise<void> =>
           type: existing?.type ?? 'min',
         };
       });
-      targetBasis = 'default';
+      targetBasis = profileComplete ? 'personalised' : 'default';
     } else if (canPersonalise) {
       const result = computePersonalisedTargets(
         category,
@@ -700,6 +700,101 @@ router.put('/category', async (req: AuthRequest, res: Response): Promise<void> =
   }
 });
 
+// ─── POST /nutrition/ai-goals — AI-recommended nutrient goals ────────────
+
+router.post('/ai-goals', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { goals, conditions, language } = req.body as {
+      goals?: unknown;
+      conditions?: unknown;
+      language?: unknown;
+    };
+
+    if (!Array.isArray(goals) || goals.length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'goals is required' });
+      return;
+    }
+
+    const goalsStr = (goals as string[]).join(', ');
+    const conditionsStr =
+      Array.isArray(conditions) && conditions.length > 0
+        ? (conditions as string[]).join(', ')
+        : 'none';
+    const lang = typeof language === 'string' ? language : 'en';
+    const isChinese = lang === 'zh-HK' || lang === 'zh-TW';
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a registered dietitian specialising in personalised nutrition.
+
+A user has provided their health goals and conditions. Recommend which nutrients they should track daily and set sensible daily targets.
+
+User health goals: ${goalsStr}
+User health conditions / dietary restrictions: ${conditionsStr}
+Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style)' : 'English'}
+
+Available nutrient keys (use ONLY these exact keys):
+calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg), folate (mcg), iron (mg)
+
+Return a JSON object with:
+- "nutrients": array of 3-6 nutrient keys most relevant for these goals/conditions
+- "goals": object mapping each selected key to a daily target number (assume average adult ~70kg, moderate activity unless conditions suggest otherwise)
+- "explanations": object mapping each selected key to a 1-sentence explanation in the response language (why this nutrient matters for their goals)
+
+Guidelines:
+- Weight loss: moderate calorie deficit ~1600-1800 kcal, high protein ~120-140g, lower carbs/sugar
+- Muscle building: maintenance or slight surplus ~2200-2500 kcal, high protein ~140-160g
+- Diabetes: track carbs <150g, sugar <25g, fiber >25g
+- Hypertension: track sodium <1500mg
+- Kidney disease: limit protein <50g, sodium <1500mg
+- Pregnancy: folate 600mcg, iron 27mg, protein ~71g
+- Heart health: fiber >25g, sodium <1500mg, fat <65g
+
+Return ONLY valid JSON, no markdown, no explanation.
+Example: {"nutrients":["calories","protein","carbs","fat"],"goals":{"calories":1700,"protein":130,"carbs":170,"fat":55},"explanations":{"calories":"Creating a moderate calorie deficit to support steady weight loss","protein":"High protein preserves muscle while in a calorie deficit","carbs":"Moderate carbs keep energy stable","fat":"Balanced fat supports hormones and satiety"}}`;
+
+    const result = await model.generateContent(prompt);
+    const rawText = result.response.text().trim();
+
+    let parsed: { nutrients: string[]; goals: Record<string, number>; explanations: Record<string, string> };
+    try {
+      const cleaned = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
+      return;
+    }
+
+    const validNutrients = (parsed.nutrients ?? []).filter(
+      (k) => typeof k === 'string' && (VALID_NUTRIENT_KEYS as readonly string[]).includes(k)
+    );
+    if (validNutrients.length === 0) {
+      res.status(500).json({ success: false, data: null, error: 'AI returned no valid nutrients' });
+      return;
+    }
+
+    const validGoals: Record<string, number> = {};
+    for (const k of validNutrients) {
+      if (typeof parsed.goals?.[k] === 'number') validGoals[k] = parsed.goals[k];
+    }
+
+    const validExplanations: Record<string, string> = {};
+    for (const k of validNutrients) {
+      if (typeof parsed.explanations?.[k] === 'string') validExplanations[k] = parsed.explanations[k];
+    }
+
+    res.json({
+      success: true,
+      data: { nutrients: validNutrients, goals: validGoals, explanations: validExplanations },
+      error: null,
+    });
+  } catch (err) {
+    console.error('[POST /nutrition/ai-goals]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to generate AI nutrient goals' });
+  }
+});
+
 // ─── GET /nutrition/custom-config — get user's custom nutrient config ─────
 
 router.get('/custom-config', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -710,7 +805,7 @@ router.get('/custom-config', async (req: AuthRequest, res: Response): Promise<vo
     if (!doc) {
       res.json({
         success: true,
-        data: { nutrients: DEFAULT_CUSTOM_NUTRIENTS, goals: DEFAULT_CUSTOM_GOALS },
+        data: { nutrients: DEFAULT_CUSTOM_NUTRIENTS, goals: DEFAULT_CUSTOM_GOALS, aiSetupDone: false },
         error: null,
       });
       return;
@@ -722,7 +817,7 @@ router.get('/custom-config', async (req: AuthRequest, res: Response): Promise<vo
         ? Object.fromEntries(goalsMap.entries())
         : (goalsMap as Record<string, number>);
 
-    res.json({ success: true, data: { nutrients: doc.nutrients, goals }, error: null });
+    res.json({ success: true, data: { nutrients: doc.nutrients, goals, aiSetupDone: doc.aiSetupDone ?? false }, error: null });
   } catch (err) {
     console.error('[GET /nutrition/custom-config]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to get custom nutrient config' });
@@ -734,7 +829,7 @@ router.get('/custom-config', async (req: AuthRequest, res: Response): Promise<vo
 router.put('/custom-config', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.userId as string;
-    const { nutrients, goals } = req.body as { nutrients?: unknown; goals?: unknown };
+    const { nutrients, goals, aiSetupDone } = req.body as { nutrients?: unknown; goals?: unknown; aiSetupDone?: unknown };
 
     // Validate nutrients
     if (!Array.isArray(nutrients) || nutrients.length === 0) {
@@ -795,9 +890,17 @@ router.put('/custom-config', async (req: AuthRequest, res: Response): Promise<vo
     const validatedNutrients = nutrients as string[];
     const validatedGoals = goalsObj as Record<string, number>;
 
+    const updateFields: Record<string, unknown> = {
+      userId,
+      nutrients: validatedNutrients,
+      goals: validatedGoals,
+      updatedAt: new Date(),
+    };
+    if (aiSetupDone === true) updateFields.aiSetupDone = true;
+
     const doc = await UserNutritionCustomConfig.findOneAndUpdate(
       { userId },
-      { userId, nutrients: validatedNutrients, goals: validatedGoals, updatedAt: new Date() },
+      updateFields,
       { upsert: true, new: true }
     );
 
@@ -807,7 +910,7 @@ router.put('/custom-config', async (req: AuthRequest, res: Response): Promise<vo
         ? Object.fromEntries(savedGoalsMap.entries())
         : (savedGoalsMap as Record<string, number>);
 
-    res.json({ success: true, data: { nutrients: doc.nutrients, goals: savedGoals }, error: null });
+    res.json({ success: true, data: { nutrients: doc.nutrients, goals: savedGoals, aiSetupDone: doc.aiSetupDone ?? false }, error: null });
   } catch (err) {
     console.error('[PUT /nutrition/custom-config]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to update custom nutrient config' });
