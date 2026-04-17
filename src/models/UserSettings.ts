@@ -7,6 +7,7 @@ export interface IUserSettings extends Document {
   timezone: string; // IANA tz string
   emailDigestEnabled: boolean;
   emailDigestDay: string; // e.g. "sunday"
+  communityContributeEnabled: boolean; // opt-out of contributing to community food DB
   createdAt: Date;
   updatedAt: Date;
 }
@@ -19,6 +20,7 @@ const UserSettingsSchema = new Schema<IUserSettings>(
     timezone: { type: String, default: 'UTC' },
     emailDigestEnabled: { type: Boolean, default: false },
     emailDigestDay: { type: String, default: 'sunday' },
+    communityContributeEnabled: { type: Boolean, default: true },
   },
   { timestamps: true },
 );

@@ -11,6 +11,8 @@ import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
 import { offLookup } from '../services/offLookup';
+import { contributeToCommDB } from '../services/communityContribution';
+import { CommunityFoodItem } from '../models/CommunityFoodItem';
 
 const router = Router();
 
@@ -130,11 +132,47 @@ Example for a single item:
     }
     const { foods, suggestions } = parseResult;
 
-    // Enrich foods with OFF nutrition data where available (parallel, non-blocking)
+    // Enrich foods: community → OFF → AI estimate (parallel per item)
     type FoodItem = { name?: string; quantity?: number; unit?: string; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
     const enrichedFoods = await Promise.all(
       (foods as FoodItem[]).map(async (item) => {
         if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
+
+        // 1. Community DB lookup
+        try {
+          const normalized = item.name.trim().toLowerCase();
+          const communityItem = await CommunityFoodItem.findOne({
+            $or: [
+              { name: { $regex: normalized, $options: 'i' } },
+              { aliases: { $regex: normalized, $options: 'i' } },
+            ],
+            status: { $in: ['community', 'verified'] },
+          }).lean();
+
+          if (communityItem) {
+            const p100 = communityItem.per100g;
+            return {
+              ...item,
+              nutrients: {
+                calories: p100.calories,
+                protein: p100.protein,
+                carbs: p100.carbs,
+                fat: p100.fat,
+                sugar: p100.sugar,
+                fiber: p100.fiber,
+                sodium: p100.sodium,
+              },
+              estimated: false,
+              source: 'community',
+              communityStatus: communityItem.status,
+              contributionCount: communityItem.contributionCount,
+            };
+          }
+        } catch {
+          // Community lookup failure is non-fatal
+        }
+
+        // 2. OFF lookup
         try {
           const off = await offLookup(item.name, item.quantity, item.unit);
           if (off) {
@@ -149,6 +187,7 @@ Example for a single item:
         } catch {
           // OFF failure is non-fatal — keep AI estimate
         }
+
         return { ...item, source: 'ai_estimated' };
       })
     );
@@ -240,7 +279,48 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       return;
     }
 
-    // ── 2. Fall back to AI ────────────────────────────────────────────
+    // ── 2. Community DB lookup ────────────────────────────────────────
+    const communityItem = await CommunityFoodItem.findOne({
+      $or: [
+        { name: { $regex: normalized, $options: 'i' } },
+        { aliases: { $regex: normalized, $options: 'i' } },
+      ],
+      status: { $in: ['community', 'verified'] },
+    }).lean();
+
+    if (communityItem) {
+      const p100 = communityItem.per100g;
+      const products: FoodProduct[] = [
+        {
+          id: (communityItem._id as Types.ObjectId).toString(),
+          name: communityItem.name,
+          brand: '',
+          servingSize: '100g',
+          source: 'database' as const,
+          calories: roundOrNull(p100.calories),
+          protein: roundOrNull(p100.protein),
+          carbs: roundOrNull(p100.carbs),
+          fat: roundOrNull(p100.fat),
+          sugar: roundOrNull(p100.sugar),
+          fiber: roundOrNull(p100.fiber),
+          sodium: roundOrNull(p100.sodium),
+          imageUrl: null,
+        },
+      ];
+      res.json({
+        success: true,
+        data: {
+          products,
+          source: 'community',
+          contributionCount: communityItem.contributionCount,
+          status: communityItem.status,
+        },
+        error: null,
+      });
+      return;
+    }
+
+    // ── 3. Fall back to AI ────────────────────────────────────────────
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
@@ -895,7 +975,7 @@ router.get('/library', async (req: AuthRequest, res: Response): Promise<void> =>
 router.post('/library', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.userId as string;
-    const { name, brand, servingSize, calories, protein, carbs, fat, sugar, fiber, sodium } = req.body as {
+    const { name, brand, servingSize, calories, protein, carbs, fat, sugar, fiber, sodium, communityFoodItemRef } = req.body as {
       name?: unknown;
       brand?: unknown;
       servingSize?: unknown;
@@ -906,6 +986,7 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
       sugar?: unknown;
       fiber?: unknown;
       sodium?: unknown;
+      communityFoodItemRef?: unknown;
     };
 
     if (typeof name !== 'string' || name.trim().length === 0) {
@@ -916,25 +997,29 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
     const displayName = name.trim();
     const normalizedName = displayName.toLowerCase();
 
+    const setFields: Record<string, unknown> = {
+      displayName,
+      brand: typeof brand === 'string' ? brand.trim() : '',
+      servingSize: typeof servingSize === 'string' ? servingSize.trim() : '',
+      calories: typeof calories === 'number' ? calories : null,
+      protein: typeof protein === 'number' ? protein : null,
+      carbs: typeof carbs === 'number' ? carbs : null,
+      fat: typeof fat === 'number' ? fat : null,
+      sugar: typeof sugar === 'number' ? sugar : null,
+      fiber: typeof fiber === 'number' ? fiber : null,
+      sodium: typeof sodium === 'number' ? sodium : null,
+      lastUsedAt: new Date(),
+    };
+
+    // Link to community source when saving a personal override
+    if (typeof communityFoodItemRef === 'string' && Types.ObjectId.isValid(communityFoodItemRef)) {
+      setFields.communityFoodItemRef = new Types.ObjectId(communityFoodItemRef);
+    }
+
     // Upsert: if same normalised name exists, update nutrition data and increment useCount
     const item = await UserFoodItem.findOneAndUpdate(
       { userId, name: normalizedName },
-      {
-        $set: {
-          displayName,
-          brand: typeof brand === 'string' ? brand.trim() : '',
-          servingSize: typeof servingSize === 'string' ? servingSize.trim() : '',
-          calories: typeof calories === 'number' ? calories : null,
-          protein: typeof protein === 'number' ? protein : null,
-          carbs: typeof carbs === 'number' ? carbs : null,
-          fat: typeof fat === 'number' ? fat : null,
-          sugar: typeof sugar === 'number' ? sugar : null,
-          fiber: typeof fiber === 'number' ? fiber : null,
-          sodium: typeof sodium === 'number' ? sodium : null,
-          lastUsedAt: new Date(),
-        },
-        $inc: { useCount: 1 },
-      },
+      { $set: setFields, $inc: { useCount: 1 } },
       { upsert: true, new: true }
     );
 
@@ -942,6 +1027,62 @@ router.post('/library', async (req: AuthRequest, res: Response): Promise<void> =
   } catch (err) {
     console.error('[POST /nutrition/library]', err);
     res.status(500).json({ success: false, data: null, error: 'Failed to save to library' });
+  }
+});
+
+// ─── PATCH /nutrition/library/:id — update personal food item (override) ─────
+
+router.patch('/library/:id', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const id = req.params.id as string;
+
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ success: false, data: null, error: 'Invalid id' });
+      return;
+    }
+
+    const item = await UserFoodItem.findById(id);
+    if (!item) {
+      res.status(404).json({ success: false, data: null, error: 'Not found' });
+      return;
+    }
+
+    if (item.userId.toString() !== userId) {
+      res.status(403).json({ success: false, data: null, error: 'Forbidden' });
+      return;
+    }
+
+    const { calories, protein, carbs, fat, sugar, fiber, sodium, servingSize, communityFoodItemRef } = req.body as {
+      calories?: unknown;
+      protein?: unknown;
+      carbs?: unknown;
+      fat?: unknown;
+      sugar?: unknown;
+      fiber?: unknown;
+      sodium?: unknown;
+      servingSize?: unknown;
+      communityFoodItemRef?: unknown;
+    };
+
+    const updates: Record<string, unknown> = {};
+    if (typeof calories  === 'number') updates.calories  = calories;
+    if (typeof protein   === 'number') updates.protein   = protein;
+    if (typeof carbs     === 'number') updates.carbs     = carbs;
+    if (typeof fat       === 'number') updates.fat       = fat;
+    if (typeof sugar     === 'number') updates.sugar     = sugar;
+    if (typeof fiber     === 'number') updates.fiber     = fiber;
+    if (typeof sodium    === 'number') updates.sodium    = sodium;
+    if (typeof servingSize === 'string') updates.servingSize = servingSize.trim();
+    if (typeof communityFoodItemRef === 'string' && Types.ObjectId.isValid(communityFoodItemRef)) {
+      updates.communityFoodItemRef = new Types.ObjectId(communityFoodItemRef);
+    }
+
+    const updated = await UserFoodItem.findByIdAndUpdate(id, { $set: updates }, { new: true });
+    res.json({ success: true, data: updated, error: null });
+  } catch (err) {
+    console.error('[PATCH /nutrition/library/:id]', err);
+    res.status(500).json({ success: false, data: null, error: 'Failed to update library item' });
   }
 });
 
@@ -1036,6 +1177,27 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     }
 
     const entry = await MealEntry.create(entryData);
+
+    // Fire-and-forget: contribute each food item to the community DB (non-blocking)
+    const validFoods = Array.isArray(foods)
+      ? (foods as Array<Record<string, unknown>>).filter(
+          (f) =>
+            typeof f.name === 'string' &&
+            typeof f.quantity === 'number' &&
+            typeof f.unit === 'string' &&
+            f.nutrients != null &&
+            typeof f.nutrients === 'object',
+        )
+      : [];
+    for (const food of validFoods) {
+      contributeToCommDB(userId, {
+        name: food.name as string,
+        quantity: food.quantity as number,
+        unit: food.unit as string,
+        nutrients: food.nutrients as Record<string, number>,
+      }).catch(() => {/* swallowed — non-fatal */});
+    }
+
     res.status(201).json({ success: true, data: entry, error: null });
   } catch (err) {
     console.error('[POST /nutrition]', err);
