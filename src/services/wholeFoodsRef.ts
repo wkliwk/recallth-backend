@@ -144,23 +144,20 @@ const ALIASES: Record<string, string> = {
 /**
  * Look up a food by name in the curated whole-foods table.
  * Returns per-100g nutrients, or null if not found.
+ *
+ * Intentionally strict: only exact matches. Dish names that happen to contain
+ * a whole-food word (e.g. 菠蘿油 contains 菠蘿) must NOT match — they are
+ * composite dishes and should fall through to AI estimation.
  */
 export function wholeFoodsLookup(name: string): WholeFoodNutrients | null {
   const normalised = name.trim().toLowerCase();
 
-  // Direct English match
+  // 1. Direct English match (case-insensitive)
   if (WHOLE_FOODS_PER_100G[normalised]) return WHOLE_FOODS_PER_100G[normalised];
 
-  // Chinese alias → English key
+  // 2. Exact Chinese alias match
   const englishKey = ALIASES[name.trim()];
   if (englishKey && WHOLE_FOODS_PER_100G[englishKey]) return WHOLE_FOODS_PER_100G[englishKey];
-
-  // Partial match: check if the name contains or is contained by any alias
-  for (const [alias, key] of Object.entries(ALIASES)) {
-    if (name.includes(alias) || alias.includes(normalised)) {
-      if (WHOLE_FOODS_PER_100G[key]) return WHOLE_FOODS_PER_100G[key];
-    }
-  }
 
   return null;
 }
