@@ -241,6 +241,7 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
 
         // 2. Curated whole-foods reference table (USDA-sourced, deterministic)
         const wholeFood = wholeFoodsLookup(item.name);
+        console.log(`[enrich] "${item.name}" → wholeFoodsRef=${wholeFood ? 'HIT' : 'MISS'}`);
         if (wholeFood) {
           const weightG = item.grams ?? 100;
           const scale = weightG / 100;
@@ -261,6 +262,7 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
           };
         }
 
+        console.log(`[enrich] "${item.name}" → source=ai_estimated`);
         return { ...item, source: 'ai_estimated' };
       })
     );
