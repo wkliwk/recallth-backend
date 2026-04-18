@@ -22,12 +22,13 @@ chatRouter.use(authenticate);
 // POST /chat — send message, get AI response
 chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId as string;
-  const { message, conversationId, language, image, imageMimeType } = req.body as {
+  const { message, conversationId, language, image, imageMimeType, sessionTitle } = req.body as {
     message?: string;
     conversationId?: string;
     language?: string;
     image?: string;        // base64-encoded image data
     imageMimeType?: string; // e.g. 'image/jpeg', 'image/png'
+    sessionTitle?: string; // optional human-readable title for auto-sessions (e.g. Stack Builder)
   };
 
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
@@ -66,13 +67,18 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
   const hasImage = image && imageMimeType && validImageTypes.includes(imageMimeType);
 
+  const cleanSessionTitle = sessionTitle && typeof sessionTitle === 'string'
+    ? sessionTitle.slice(0, 80).trim()
+    : undefined;
+
   const result = await processChat(
     userId,
     message.trim(),
     conversationId,
     languageOverride,
     hasImage ? image : undefined,
-    hasImage ? imageMimeType : undefined
+    hasImage ? imageMimeType : undefined,
+    cleanSessionTitle
   );
 
   res.status(200).json({
