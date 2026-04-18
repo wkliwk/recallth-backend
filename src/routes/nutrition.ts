@@ -509,6 +509,72 @@ Example: [{"name":"雞胸肉","brand":"","servingSize":"100g","calories":165,"pr
   }
 });
 
+// ─── GET /nutrition/food-db/search — FoodItem DB search with filters ────────
+
+router.get('/food-db/search', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { q, category, flags, limit: limitStr } = req.query as {
+      q?: string;
+      category?: string;
+      flags?: string;
+      limit?: string;
+    };
+
+    if (typeof q !== 'string' || q.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'q (search query) is required' });
+      return;
+    }
+
+    const normalized = q.trim().toLowerCase();
+    const limit = Math.min(parseInt(limitStr ?? '10', 10) || 10, 20);
+
+    const mongoQuery: Record<string, unknown> = {
+      $or: [
+        { name: { $regex: normalized, $options: 'i' } },
+        { aliases: { $regex: normalized, $options: 'i' } },
+      ],
+      status: 'active',
+    };
+
+    if (typeof category === 'string' && category.trim().length > 0) {
+      mongoQuery.category = category.trim();
+    }
+
+    if (typeof flags === 'string' && flags.trim().length > 0) {
+      const validFlags = ['highProtein', 'highFiber', 'lowSugar', 'lowSodium', 'lowCalorie', 'highCalorie'];
+      for (const flag of flags.split(',').map((f) => f.trim()).filter(Boolean)) {
+        if (validFlags.includes(flag)) {
+          mongoQuery[`nutritionFlags.${flag}`] = true;
+        }
+      }
+    }
+
+    const items = await FoodItem.find(mongoQuery)
+      .sort({ accuracyTier: 1, logCount: -1 })
+      .limit(limit)
+      .lean();
+
+    const results = items.map((item) => ({
+      id: (item._id as Types.ObjectId).toString(),
+      name: item.name,
+      displayName: item.displayName,
+      category: item.category,
+      per100g: item.per100g,
+      defaultServingGrams: item.defaultServingGrams,
+      defaultServingUnit: item.defaultServingUnit,
+      source: item.source,
+      accuracyTier: item.accuracyTier,
+      contributionCount: item.contributionCount,
+      nutritionFlags: item.nutritionFlags,
+    }));
+
+    res.json({ success: true, data: { results, total: results.length }, error: null });
+  } catch (err) {
+    console.error('[GET /nutrition/food-db/search]', err);
+    res.status(500).json({ success: false, data: null, error: 'Food database search failed' });
+  }
+});
+
 // ─── POST /nutrition/ocr — Gemini vision nutrition label extraction ─────────
 
 router.post('/ocr', async (req: AuthRequest, res: Response): Promise<void> => {
