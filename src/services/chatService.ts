@@ -562,7 +562,8 @@ export async function processChat(
   conversationId?: string,
   languageOverride?: DetectedLanguage,
   imageBase64?: string,
-  imageMimeType?: string
+  imageMimeType?: string,
+  sessionTitle?: string
 ): Promise<ChatResult> {
   const userObjectId = new Types.ObjectId(userId);
 
@@ -598,7 +599,7 @@ export async function processChat(
   } else {
     conversation = await Conversation.create({
       userId: userObjectId,
-      title: generateTitle(userMessage),
+      title: sessionTitle ?? generateTitle(userMessage),
       messages: [],
     });
   }
@@ -657,7 +658,8 @@ export async function processChat(
   await conversation.save();
 
   // Fire async title+summary generation after first exchange (non-blocking)
-  if (conversation.messages.length === 2 && !conversationId) {
+  // Skip if a sessionTitle was provided — it's already human-readable
+  if (conversation.messages.length === 2 && !conversationId && !sessionTitle) {
     void generateTitleAndSummary(String(conversation._id), userMessage);
   }
 
