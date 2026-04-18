@@ -61,6 +61,7 @@ export interface IFoodItem extends Document {
   nutritionFlags: NutritionFlags;
   searchCount: number;
   logCount: number;
+  dataSourceUrl?: string;
   dishImageUrl?: string;
   labelImageUrl?: string;
   variantOf?: Types.ObjectId;
@@ -148,6 +149,7 @@ const FoodItemSchema = new Schema<IFoodItem>(
     nutritionFlags:    { type: NutritionFlagsSchema, required: true },
     searchCount: { type: Number, default: 0 },
     logCount:    { type: Number, default: 0 },
+    dataSourceUrl: { type: String },
     dishImageUrl:  { type: String },
     labelImageUrl: { type: String },
     variantOf:  { type: Schema.Types.ObjectId, ref: 'FoodItem' },

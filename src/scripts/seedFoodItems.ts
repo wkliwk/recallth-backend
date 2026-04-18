@@ -71,6 +71,7 @@ interface FoodItemSeed {
   venue?: string;
   brand?: string;
   accuracyTier?: AccuracyTier;
+  dataSourceUrl?: string;
 }
 
 // ─── Upsert helper ─────────────────────────────────────────────────────────
@@ -86,6 +87,7 @@ async function upsertItem(seed: FoodItemSeed): Promise<'created' | 'updated' | '
     lang: 'zh-HK' as const,
     category: seed.category,
     brand: seed.brand,
+    dataSourceUrl: seed.dataSourceUrl,
     per100g: seed.per100g,
     defaultServingGrams: seed.defaultServingGrams,
     defaultServingUnit: seed.defaultServingUnit,

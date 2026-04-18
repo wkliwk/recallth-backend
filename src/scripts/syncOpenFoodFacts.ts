@@ -62,6 +62,7 @@ function mapOFFProduct(p: OFFProduct): {
   name: string;
   displayName: string;
   brand: string;
+  dataSourceUrl: string;
   per100g: {
     calories: number;
     protein: number;
@@ -99,6 +100,7 @@ function mapOFFProduct(p: OFFProduct): {
     name: rawName.toLowerCase(),
     displayName: rawName,
     brand: p.brands?.split(',')[0]?.trim() ?? '',
+    dataSourceUrl: `https://world.openfoodfacts.org/product/${p.code}`,
     per100g: {
       calories: Math.round(calories * 10) / 10,
       protein: Math.round(protein * 10) / 10,
@@ -165,6 +167,7 @@ async function upsertProduct(mapped: ReturnType<typeof mapOFFProduct> & {}): Pro
     lang: 'zh-HK' as const,
     category: 'packaged' as const,
     brand: mapped.brand || undefined,
+    dataSourceUrl: mapped.dataSourceUrl,
     per100g: mapped.per100g,
     defaultServingGrams,
     defaultServingUnit: '份',
