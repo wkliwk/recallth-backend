@@ -13,8 +13,39 @@ import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
 import { wholeFoodsLookup } from '../services/wholeFoodsRef';
 import { contributeToCommDB } from '../services/communityContribution';
 import { CommunityFoodItem } from '../models/CommunityFoodItem';
+import { FoodImageCache } from '../models/FoodImageCache';
 
 const router = Router();
+
+// ─── Pexels image lookup with MongoDB cache ───────────────────────────────
+async function fetchPexelsImage(dishName: string): Promise<string | null> {
+  const apiKey = process.env.PEXELS_API_KEY;
+  if (!apiKey) return null;
+
+  const key = dishName.toLowerCase().trim();
+
+  // 1. Check cache first
+  const cached = await FoodImageCache.findOne({ key }).lean();
+  if (cached !== null) return cached.imageUrl;
+
+  // 2. Call Pexels API
+  try {
+    const query = encodeURIComponent(dishName);
+    const res = await fetch(`https://api.pexels.com/v1/search?query=${query}&per_page=1&orientation=square`, {
+      headers: { Authorization: apiKey },
+    });
+    if (!res.ok) {
+      await FoodImageCache.updateOne({ key }, { key, imageUrl: null }, { upsert: true });
+      return null;
+    }
+    const data = await res.json() as { photos: Array<{ src: { medium: string } }> };
+    const imageUrl = data.photos?.[0]?.src?.medium ?? null;
+    await FoodImageCache.updateOne({ key }, { key, imageUrl }, { upsert: true });
+    return imageUrl;
+  } catch {
+    return null;
+  }
+}
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -352,21 +383,23 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
       .lean();
 
     if (libraryItems.length > 0) {
-      const products: FoodProduct[] = libraryItems.map((item) => ({
-        id: (item._id as Types.ObjectId).toString(),
-        name: item.displayName,
-        brand: item.brand,
-        servingSize: item.servingSize,
-        source: 'library' as const,
-        calories: item.calories,
-        protein: item.protein,
-        carbs: item.carbs,
-        fat: item.fat,
-        sugar: item.sugar,
-        fiber: item.fiber,
-        sodium: item.sodium,
-        imageUrl: null,
-      }));
+      const products: FoodProduct[] = await Promise.all(
+        libraryItems.map(async (item) => ({
+          id: (item._id as Types.ObjectId).toString(),
+          name: item.displayName,
+          brand: item.brand,
+          servingSize: item.servingSize,
+          source: 'library' as const,
+          calories: item.calories,
+          protein: item.protein,
+          carbs: item.carbs,
+          fat: item.fat,
+          sugar: item.sugar,
+          fiber: item.fiber,
+          sodium: item.sodium,
+          imageUrl: await fetchPexelsImage(item.displayName),
+        }))
+      );
       res.json({ success: true, data: { products, source: 'library' }, error: null });
       return;
     }
@@ -396,7 +429,7 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
           sugar: roundOrNull(p100.sugar),
           fiber: roundOrNull(p100.fiber),
           sodium: roundOrNull(p100.sodium),
-          imageUrl: null,
+          imageUrl: await fetchPexelsImage(communityItem.name),
         },
       ];
       res.json({
@@ -445,9 +478,9 @@ Example: [{"name":"雞胸肉","brand":"","servingSize":"100g","calories":165,"pr
       if (jsonMatch) {
         const items = JSON.parse(jsonMatch[0]) as Record<string, unknown>[];
         if (Array.isArray(items)) {
-          products = items
-            .filter((item) => typeof item.name === 'string' && item.name.trim().length > 0)
-            .map((item, idx) => ({
+          const filtered = items.filter((item) => typeof item.name === 'string' && item.name.trim().length > 0);
+          products = await Promise.all(
+            filtered.map(async (item, idx) => ({
               id: `ai-${idx}`,
               name: String(item.name ?? '').trim(),
               brand: String(item.brand ?? '').trim(),
@@ -460,8 +493,9 @@ Example: [{"name":"雞胸肉","brand":"","servingSize":"100g","calories":165,"pr
               sugar: typeof item.sugar === 'number' ? roundOrNull(item.sugar) : null,
               fiber: typeof item.fiber === 'number' ? roundOrNull(item.fiber) : null,
               sodium: typeof item.sodium === 'number' ? roundOrNull(item.sodium) : null,
-              imageUrl: null,
-            }));
+              imageUrl: await fetchPexelsImage(String(item.name ?? '').trim()),
+            }))
+          );
         }
       }
     } catch (aiErr) {
