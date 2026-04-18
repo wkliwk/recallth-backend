@@ -12,7 +12,7 @@ import { buildAiUsage } from '../utils/aiUsage';
 import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
 import { wholeFoodsLookup } from '../services/wholeFoodsRef';
 import { contributeToCommDB } from '../services/communityContribution';
-import { CommunityFoodItem } from '../models/CommunityFoodItem';
+import { FoodItem } from '../models/FoodItem';
 import { FoodImageCache } from '../models/FoodImageCache';
 
 const router = Router();
@@ -236,12 +236,12 @@ For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro,
         // 1. Community DB lookup (user-contributed HK food data)
         try {
           const normalized = item.name.trim().toLowerCase();
-          const communityItem = await CommunityFoodItem.findOne({
+          const communityItem = await FoodItem.findOne({
             $or: [
               { name: { $regex: normalized, $options: 'i' } },
               { aliases: { $regex: normalized, $options: 'i' } },
             ],
-            status: { $in: ['community', 'verified'] },
+            status: 'active',
           }).lean();
 
           if (communityItem) {
@@ -405,12 +405,12 @@ router.get('/search', async (req: AuthRequest, res: Response): Promise<void> => 
     }
 
     // ── 2. Community DB lookup ────────────────────────────────────────
-    const communityItem = await CommunityFoodItem.findOne({
+    const communityItem = await FoodItem.findOne({
       $or: [
         { name: { $regex: normalized, $options: 'i' } },
         { aliases: { $regex: normalized, $options: 'i' } },
       ],
-      status: { $in: ['community', 'verified'] },
+      status: 'active',
     }).lean();
 
     if (communityItem) {
