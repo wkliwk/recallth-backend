@@ -804,10 +804,12 @@ router.put('/category', async (req: AuthRequest, res: Response): Promise<void> =
 
 router.post('/ai-goals', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { goals, conditions, language } = req.body as {
+    const { goals, conditions, language, mode, messages } = req.body as {
       goals?: unknown;
       conditions?: unknown;
       language?: unknown;
+      mode?: unknown;
+      messages?: unknown;
     };
 
     if (!Array.isArray(goals) || goals.length === 0) {
@@ -826,6 +828,102 @@ router.post('/ai-goals', async (req: AuthRequest, res: Response): Promise<void> 
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
+    // ─── Conversational mode ──────────────────────────────────────────────
+    if (mode === 'conversational') {
+      const parsedMessages: Array<{ role: 'ai' | 'user'; content: string }> = Array.isArray(messages)
+        ? (messages as Array<{ role: 'ai' | 'user'; content: string }>)
+        : [];
+
+      const userMessageCount = parsedMessages.filter((m) => m.role === 'user').length;
+
+      const conversationalPrompt = `You are a registered dietitian. A user is setting up their nutrition tracking goals.
+
+User's initial health goals: ${goalsStr}
+User's health conditions: ${conditionsStr}
+Conversation so far:
+${parsedMessages.map((m) => `${m.role === 'ai' ? 'Dietitian' : 'User'}: ${m.content}`).join('\n') || '(none yet)'}
+User messages so far: ${userMessageCount}
+Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style)' : 'English'}
+
+If you need ONE more piece of information to give a personalised recommendation, AND the user has replied fewer than 2 times already, ask ONE short follow-up question. Provide 3–4 short quick-reply suggestions.
+
+Otherwise (or if you already have enough info), generate the final nutrition targets now.
+
+Available nutrient keys: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg), folate (mcg), iron (mg)
+
+Return ONLY valid JSON in ONE of these two shapes:
+
+Shape A (need more info):
+{"done":false,"followUp":"<question>","suggestions":["<option1>","<option2>","<option3>","<option4>"]}
+
+Shape B (final recommendation):
+{"done":true,"nutrients":["calories","protein","carbs","fat"],"goals":{"calories":1700,"protein":130,"carbs":170,"fat":55},"explanations":{"calories":"...","protein":"...","carbs":"...","fat":"..."},"goalDescription":"<1-sentence summary of user's specific goal>"}
+
+Return ONLY valid JSON, no markdown.`;
+
+      const convResult = await model.generateContent(conversationalPrompt);
+      const convRawText = convResult.response.text().trim();
+
+      let convParsed: {
+        done: boolean;
+        followUp?: string;
+        suggestions?: string[];
+        nutrients?: string[];
+        goals?: Record<string, number>;
+        explanations?: Record<string, string>;
+        goalDescription?: string;
+      };
+      try {
+        const cleaned = convRawText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+        convParsed = JSON.parse(cleaned);
+      } catch {
+        res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
+        return;
+      }
+
+      if (!convParsed.done) {
+        res.json({
+          success: true,
+          data: { done: false, followUp: convParsed.followUp, suggestions: convParsed.suggestions },
+          error: null,
+        });
+        return;
+      }
+
+      // done: true — validate nutrients and goals same as single-shot path
+      const validNutrients = (convParsed.nutrients ?? []).filter(
+        (k) => typeof k === 'string' && (VALID_NUTRIENT_KEYS as readonly string[]).includes(k)
+      );
+      if (validNutrients.length === 0) {
+        res.status(500).json({ success: false, data: null, error: 'AI returned no valid nutrients' });
+        return;
+      }
+
+      const validGoals: Record<string, number> = {};
+      for (const k of validNutrients) {
+        if (typeof convParsed.goals?.[k] === 'number') validGoals[k] = convParsed.goals[k];
+      }
+
+      const validExplanations: Record<string, string> = {};
+      for (const k of validNutrients) {
+        if (typeof convParsed.explanations?.[k] === 'string') validExplanations[k] = convParsed.explanations[k];
+      }
+
+      res.json({
+        success: true,
+        data: {
+          done: true,
+          nutrients: validNutrients,
+          goals: validGoals,
+          explanations: validExplanations,
+          goalDescription: convParsed.goalDescription,
+        },
+        error: null,
+      });
+      return;
+    }
+
+    // ─── Single-shot mode (existing behaviour — UNCHANGED) ────────────────
     const prompt = `You are a registered dietitian specialising in personalised nutrition.
 
 A user has provided their health goals and conditions. Recommend which nutrients they should track daily and set sensible daily targets.
