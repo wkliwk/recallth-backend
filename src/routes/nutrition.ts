@@ -825,6 +825,35 @@ router.post('/ai-goals', async (req: AuthRequest, res: Response): Promise<void> 
     const lang = typeof language === 'string' ? language : 'en';
     const isChinese = lang === 'zh-HK' || lang === 'zh-TW';
 
+    // ─── Fetch user profile for personalised explanations ────────────────
+    const userId = req.userId as string;
+    let profileContext = '';
+    let tdeeValue: number | null = null;
+    try {
+      const profileDoc = await HealthProfile.findOne(
+        { userId },
+        { 'body.weight': 1, 'body.height': 1, 'body.age': 1, 'body.sex': 1, 'body.activityLevel': 1 }
+      ).lean();
+      const body = profileDoc?.body;
+      if (body?.weight && body?.height && body?.age && (body?.sex === 'male' || body?.sex === 'female')) {
+        const bmr = body.sex === 'male'
+          ? Math.round(10 * body.weight + 6.25 * body.height - 5 * body.age + 5)
+          : Math.round(10 * body.weight + 6.25 * body.height - 5 * body.age - 161);
+        const actMultipliers: Record<string, number> = {
+          sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9,
+        };
+        const multiplier = body.activityLevel ? (actMultipliers[body.activityLevel as string] ?? 1.4) : 1.4;
+        tdeeValue = Math.round(bmr * multiplier);
+        profileContext = `User physical profile: height ${body.height}cm, weight ${body.weight}kg, age ${body.age}, sex ${body.sex}${body.activityLevel ? `, activity level ${body.activityLevel}` : ''}\nEstimated daily maintenance calories (TDEE): ${tdeeValue} kcal`;
+      }
+    } catch {
+      // Profile fetch failed — proceed without personalisation
+    }
+
+    const personalisationInstruction = profileContext
+      ? `IMPORTANT: Use the user's actual physical data in every explanation. Reference their specific height, weight, and TDEE (${tdeeValue} kcal/day) to explain WHY each target number was chosen for this specific person. Do not use generic statements.`
+      : 'Use general guidelines appropriate for an average adult.';
+
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
@@ -840,7 +869,7 @@ router.post('/ai-goals', async (req: AuthRequest, res: Response): Promise<void> 
 
 User's initial health goals: ${goalsStr}
 User's health conditions: ${conditionsStr}
-Conversation so far:
+${profileContext ? profileContext + '\n' : ''}Conversation so far:
 ${parsedMessages.map((m) => `${m.role === 'ai' ? 'Dietitian' : 'User'}: ${m.content}`).join('\n') || '(none yet)'}
 User messages so far: ${userMessageCount}
 Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style)' : 'English'}
@@ -848,6 +877,8 @@ Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style
 If you need ONE more piece of information to give a personalised recommendation, AND the user has replied fewer than 2 times already, ask ONE short follow-up question. Provide 3–4 short quick-reply suggestions.
 
 Otherwise (or if you already have enough info), generate the final nutrition targets now.
+
+${personalisationInstruction}
 
 Available nutrient keys: calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg), folate (mcg), iron (mg)
 
@@ -857,7 +888,7 @@ Shape A (need more info):
 {"done":false,"followUp":"<question>","suggestions":["<option1>","<option2>","<option3>","<option4>"]}
 
 Shape B (final recommendation):
-{"done":true,"nutrients":["calories","protein","carbs","fat"],"goals":{"calories":1700,"protein":130,"carbs":170,"fat":55},"explanations":{"calories":"...","protein":"...","carbs":"...","fat":"..."},"goalDescription":"<1-sentence summary of user's specific goal>"}
+{"done":true,"nutrients":["calories","protein","carbs","fat"],"goals":{"calories":1700,"protein":130,"carbs":170,"fat":55},"explanations":{"calories":"...","protein":"...","carbs":"...","fat":"..."},"goalDescription":"<1-sentence summary referencing user's physical stats if available>"}
 
 Return ONLY valid JSON, no markdown.`;
 
@@ -930,19 +961,21 @@ A user has provided their health goals and conditions. Recommend which nutrients
 
 User health goals: ${goalsStr}
 User health conditions / dietary restrictions: ${conditionsStr}
-Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style)' : 'English'}
+${profileContext ? profileContext + '\n' : ''}Response language: ${isChinese ? 'Traditional Chinese (Hong Kong Cantonese style)' : 'English'}
+
+${personalisationInstruction}
 
 Available nutrient keys (use ONLY these exact keys):
 calories (kcal), protein (g), carbs (g), fat (g), sugar (g), fiber (g), sodium (mg), folate (mcg), iron (mg)
 
 Return a JSON object with:
 - "nutrients": array of 3-6 nutrient keys most relevant for these goals/conditions
-- "goals": object mapping each selected key to a daily target number (assume average adult ~70kg, moderate activity unless conditions suggest otherwise)
-- "explanations": object mapping each selected key to a 1-sentence explanation in the response language (why this nutrient matters for their goals)
+- "goals": object mapping each selected key to a daily target number${profileContext ? ` (use the user's actual TDEE of ${tdeeValue} kcal as the calorie baseline, then adjust per goals)` : ' (assume average adult ~70kg, moderate activity unless conditions suggest otherwise)'}
+- "explanations": object mapping each selected key to a 1-2 sentence explanation in the response language${profileContext ? ' — reference the user\'s specific height, weight, and TDEE to explain why each target number was chosen for them personally' : ' (why this nutrient matters for their goals)'}
 
 Guidelines:
-- Weight loss: moderate calorie deficit ~1600-1800 kcal, high protein ~120-140g, lower carbs/sugar
-- Muscle building: maintenance or slight surplus ~2200-2500 kcal, high protein ~140-160g
+- Weight loss: moderate calorie deficit ~500 kcal below TDEE, high protein ~1.8g/kg body weight, lower carbs/sugar
+- Muscle building: surplus ~300 kcal above TDEE, high protein ~2g/kg body weight
 - Diabetes: track carbs <150g, sugar <25g, fiber >25g
 - Hypertension: track sodium <1500mg
 - Kidney disease: limit protein <50g, sodium <1500mg
