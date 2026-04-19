@@ -40,8 +40,14 @@ export interface ILifestyle {
   smoking?: 'never' | 'former' | 'current';
 }
 
+export interface IGoalItem {
+  name: string;
+  emoji?: string;
+  notes?: string;
+}
+
 export interface IGoals {
-  primary?: string[];
+  primary?: Array<string | IGoalItem>;
 }
 
 export interface IBloodwork {
@@ -139,7 +145,7 @@ const LifestyleSchema = new Schema<ILifestyle>(
 
 const GoalsSchema = new Schema<IGoals>(
   {
-    primary: [{ type: String }],
+    primary: [{ type: mongoose.Schema.Types.Mixed }],
   },
   { _id: false }
 );
