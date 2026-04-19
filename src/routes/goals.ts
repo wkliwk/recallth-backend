@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { GoalCheckIn } from '../models/GoalCheckIn';
+import { CabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
 import { buildAiUsage } from '../utils/aiUsage';
 
@@ -163,5 +164,107 @@ Return ONLY valid JSON, no markdown:
   } catch (err) {
     console.error('[POST /goals/interpret]', err);
     res.status(500).json({ error: 'Failed to interpret goals' });
+  }
+});
+
+// POST /goals/insights
+// Given a goal name + optional notes, analyses the user's cabinet and returns
+// which supplements support the goal, which are missing, and an AI summary.
+goalsRouter.post('/insights', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const body = req.body as { goalName?: string; goalNotes?: string };
+    const { goalName, goalNotes } = body;
+
+    if (!goalName || typeof goalName !== 'string' || goalName.trim().length === 0) {
+      res.status(400).json({ error: 'goalName is required' });
+      return;
+    }
+
+    const cabinetItems = await CabinetItem.find({
+      userId: new Types.ObjectId(userId),
+      active: true,
+    }).lean();
+
+    if (cabinetItems.length === 0) {
+      res.json({
+        supporting: [],
+        missing: [],
+        summary: 'Add supplements to your cabinet to see how they align with this goal.',
+      });
+      return;
+    }
+
+    const cabinetSummary = cabinetItems.map((i) => ({
+      name: i.name,
+      type: i.type,
+      dosage: i.dosage,
+    }));
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a supplement advisor. Analyse how the user's supplement cabinet aligns with their health goal.
+
+Goal: "${goalName.trim()}"
+${goalNotes ? `Goal notes: "${goalNotes.trim()}"` : ''}
+
+User's cabinet:
+${JSON.stringify(cabinetSummary, null, 2)}
+
+Return ONLY valid JSON, no markdown:
+{
+  "supporting": [{ "name": "...", "reason": "..." }],
+  "missing": [{ "name": "...", "reason": "..." }],
+  "summary": "..."
+}
+
+Rules:
+- supporting: cabinet items that directly help this goal (max 5)
+- missing: supplements NOT in the cabinet that would meaningfully help (max 4, evidence-based)
+- summary: 1–2 sentences about the user's current stack vs this goal
+- Only include items in "supporting" that are in the cabinet list above
+- Be specific about why each supplement helps`;
+
+    let raw: string;
+    try {
+      const result = await model.generateContent(prompt);
+      raw = result.response.text().trim();
+
+      const usage = result.response.usageMetadata;
+      console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=goal-insights`);
+    } catch (aiErr) {
+      console.error('[POST /goals/insights] AI call failed:', aiErr);
+      res.status(500).json({ error: 'Failed to generate insights' });
+      return;
+    }
+
+    // Strip markdown code fences if present
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let parsed: {
+      supporting: { name: string; reason: string }[];
+      missing: { name: string; reason: string }[];
+      summary: string;
+    };
+
+    try {
+      parsed = JSON.parse(raw) as typeof parsed;
+    } catch (parseErr) {
+      console.error('[POST /goals/insights] JSON parse failed:', parseErr, 'raw:', raw);
+      res.status(500).json({ error: 'Failed to generate insights' });
+      return;
+    }
+
+    res.json({
+      supporting: parsed.supporting,
+      missing: parsed.missing,
+      summary: parsed.summary,
+    });
+  } catch (err) {
+    console.error('[POST /goals/insights]', err);
+    res.status(500).json({ error: 'Failed to generate insights' });
   }
 });
