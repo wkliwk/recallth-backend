@@ -117,3 +117,51 @@ goalsRouter.post('/check-in', async (req: AuthRequest, res: Response): Promise<v
     res.status(500).json({ success: false, data: null, error: 'Failed to save check-in' });
   }
 });
+
+// POST /goals/interpret
+// Accepts natural language text and returns structured health goals extracted by AI
+goalsRouter.post('/interpret', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
+
+    const body = req.body as { text?: string };
+    const { text } = body;
+
+    if (!text || typeof text !== 'string' || text.trim().length === 0) {
+      res.status(400).json({ error: 'text is required' });
+      return;
+    }
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a health goal interpreter. Extract health goals from the user's input text.
+The input may be in any language (English, Cantonese, Traditional Chinese, etc.).
+
+User input: "${text.trim()}"
+
+Extract 1-5 distinct health goals. For each goal:
+- name: a short, clear English name (2-4 words, e.g. "Build Muscle", "Improve Sleep", "Reduce Uric Acid", "Lose Weight", "Reduce Blood Sugar")
+- emoji: a single relevant emoji
+
+Return ONLY valid JSON, no markdown:
+{ "goals": [{ "name": "...", "emoji": "..." }] }`;
+
+    const result = await model.generateContent(prompt);
+    let raw = result.response.text().trim();
+
+    // Strip markdown code fences if present
+    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    const parsed = JSON.parse(raw) as { goals: { name: string; emoji: string }[] };
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=goal-interpret`);
+
+    res.json({ goals: parsed.goals });
+  } catch (err) {
+    console.error('[POST /goals/interpret]', err);
+    res.status(500).json({ error: 'Failed to interpret goals' });
+  }
+});
