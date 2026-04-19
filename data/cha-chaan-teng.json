@@ -33,6 +33,28 @@
     "accuracyTier": "B"
   },
   {
+    "name": "凍檸茶",
+    "displayName": "凍檸茶",
+    "aliases": ["iced lemon tea", "檸茶"],
+    "category": "drinks",
+    "per100g": { "calories": 28, "protein": 0.1, "carbs": 7.0, "fat": 0, "sugar": 6.8, "sodium": 8 },
+    "defaultServingGrams": 400,
+    "defaultServingUnit": "杯",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "熱朱古力",
+    "displayName": "熱朱古力",
+    "aliases": ["hot chocolate", "可可"],
+    "category": "drinks",
+    "per100g": { "calories": 72, "protein": 2.5, "carbs": 11, "fat": 2.5, "sugar": 10, "sodium": 60 },
+    "defaultServingGrams": 300,
+    "defaultServingUnit": "杯",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
     "name": "西多士",
     "displayName": "西多士",
     "aliases": ["french toast", "法蘭西多士"],
@@ -61,6 +83,28 @@
     "category": "bread_pastry",
     "per100g": { "calories": 290, "protein": 14, "carbs": 30, "fat": 12, "sugar": 4, "sodium": 520 },
     "defaultServingGrams": 180,
+    "defaultServingUnit": "個",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "雞蛋三文治",
+    "displayName": "雞蛋三文治",
+    "aliases": ["egg sandwich", "蛋治"],
+    "category": "bread_pastry",
+    "per100g": { "calories": 218, "protein": 8, "carbs": 22, "fat": 11, "sugar": 3, "sodium": 420 },
+    "defaultServingGrams": 150,
+    "defaultServingUnit": "個",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "腸仔包",
+    "displayName": "腸仔包",
+    "aliases": ["sausage bun", "熱狗包"],
+    "category": "bread_pastry",
+    "per100g": { "calories": 295, "protein": 10, "carbs": 35, "fat": 13, "sugar": 5, "sodium": 560 },
+    "defaultServingGrams": 130,
     "defaultServingUnit": "個",
     "venue": "cha_chaan_teng",
     "accuracyTier": "B"
@@ -121,17 +165,6 @@
     "accuracyTier": "B"
   },
   {
-    "name": "雞蛋三文治",
-    "displayName": "雞蛋三文治",
-    "aliases": ["egg sandwich", "蛋治"],
-    "category": "bread_pastry",
-    "per100g": { "calories": 218, "protein": 8, "carbs": 22, "fat": 11, "sugar": 3, "sodium": 420 },
-    "defaultServingGrams": 150,
-    "defaultServingUnit": "個",
-    "venue": "cha_chaan_teng",
-    "accuracyTier": "B"
-  },
-  {
     "name": "炒蛋飯",
     "displayName": "炒蛋飯",
     "aliases": ["scrambled egg rice"],
@@ -150,6 +183,28 @@
     "per100g": { "calories": 72, "protein": 4.5, "carbs": 10, "fat": 1.8, "sodium": 380 },
     "defaultServingGrams": 450,
     "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "乾炒牛河",
+    "displayName": "乾炒牛河",
+    "aliases": ["beef ho fun", "stir-fried beef rice noodles", "牛河"],
+    "category": "rice_noodles",
+    "per100g": { "calories": 210, "protein": 9, "carbs": 25, "fat": 9, "sodium": 680 },
+    "defaultServingGrams": 400,
+    "defaultServingUnit": "碟",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "揚州炒飯",
+    "displayName": "揚州炒飯",
+    "aliases": ["Yang Chow fried rice", "fried rice", "炒飯"],
+    "category": "rice_noodles",
+    "per100g": { "calories": 220, "protein": 9, "carbs": 28, "fat": 8, "sodium": 640 },
+    "defaultServingGrams": 350,
+    "defaultServingUnit": "碟",
     "venue": "cha_chaan_teng",
     "accuracyTier": "B"
   },
@@ -198,6 +253,28 @@
     "accuracyTier": "B"
   },
   {
+    "name": "叉燒包",
+    "displayName": "叉燒包",
+    "aliases": ["char siu bao", "BBQ pork bun", "鬆化叉燒包"],
+    "category": "dim_sum",
+    "per100g": { "calories": 235, "protein": 8, "carbs": 35, "fat": 7, "sodium": 380 },
+    "defaultServingGrams": 80,
+    "defaultServingUnit": "個",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "鳳爪",
+    "displayName": "鳳爪",
+    "aliases": ["chicken feet", "豉汁鳳爪"],
+    "category": "dim_sum",
+    "per100g": { "calories": 195, "protein": 13, "carbs": 8, "fat": 13, "sodium": 620 },
+    "defaultServingGrams": 90,
+    "defaultServingUnit": "份",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
     "name": "蛋撻",
     "displayName": "蛋撻",
     "aliases": ["egg tart", "custard tart", "dan tat"],
@@ -220,17 +297,6 @@
     "accuracyTier": "B"
   },
   {
-    "name": "魚蛋",
-    "displayName": "魚蛋",
-    "aliases": ["fish balls", "咖喱魚蛋"],
-    "category": "snacks",
-    "per100g": { "calories": 130, "protein": 10, "carbs": 12, "fat": 4, "sodium": 580 },
-    "defaultServingGrams": 100,
-    "defaultServingUnit": "串",
-    "venue": "dai_pai_dong",
-    "accuracyTier": "B"
-  },
-  {
     "name": "豆腐花",
     "displayName": "豆腐花",
     "aliases": ["tofu pudding", "tau fu fa"],
@@ -239,6 +305,39 @@
     "defaultServingGrams": 300,
     "defaultServingUnit": "碗",
     "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "糯米糍",
+    "displayName": "糯米糍",
+    "aliases": ["mochi", "sticky rice dumpling"],
+    "category": "desserts",
+    "per100g": { "calories": 250, "protein": 3, "carbs": 52, "fat": 4, "sugar": 22, "sodium": 30 },
+    "defaultServingGrams": 120,
+    "defaultServingUnit": "份",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "楊枝甘露",
+    "displayName": "楊枝甘露",
+    "aliases": ["mango pomelo sago", "mango dessert"],
+    "category": "desserts",
+    "per100g": { "calories": 110, "protein": 2, "carbs": 22, "fat": 2.5, "sugar": 18, "sodium": 35 },
+    "defaultServingGrams": 280,
+    "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "魚蛋",
+    "displayName": "魚蛋",
+    "aliases": ["fish balls", "咖喱魚蛋"],
+    "category": "snacks",
+    "per100g": { "calories": 130, "protein": 10, "carbs": 12, "fat": 4, "sodium": 580 },
+    "defaultServingGrams": 100,
+    "defaultServingUnit": "串",
+    "venue": "dai_pai_dong",
     "accuracyTier": "B"
   },
   {
@@ -251,5 +350,291 @@
     "defaultServingUnit": "份",
     "venue": "dai_pai_dong",
     "accuracyTier": "B"
+  },
+  {
+    "name": "碗仔翅",
+    "displayName": "碗仔翅",
+    "aliases": ["mock shark fin soup", "粉絲羹"],
+    "category": "snacks",
+    "per100g": { "calories": 65, "protein": 3, "carbs": 10, "fat": 1.5, "sodium": 680 },
+    "defaultServingGrams": 300,
+    "defaultServingUnit": "碗",
+    "venue": "dai_pai_dong",
+    "accuracyTier": "C"
+  },
+  {
+    "name": "牛雜",
+    "displayName": "牛雜",
+    "aliases": ["beef offal", "牛雜湯"],
+    "category": "snacks",
+    "per100g": { "calories": 140, "protein": 12, "carbs": 6, "fat": 8, "sodium": 780 },
+    "defaultServingGrams": 200,
+    "defaultServingUnit": "碗",
+    "venue": "dai_pai_dong",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "白切雞",
+    "displayName": "白切雞",
+    "aliases": ["poached chicken", "白斬雞", "白雞"],
+    "category": "protein",
+    "per100g": { "calories": 175, "protein": 24, "carbs": 0, "fat": 8, "sodium": 350 },
+    "defaultServingGrams": 200,
+    "defaultServingUnit": "份",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "烤雞腿",
+    "displayName": "烤雞腿",
+    "aliases": ["roasted chicken leg", "燒雞腿"],
+    "category": "protein",
+    "per100g": { "calories": 215, "protein": 22, "carbs": 0, "fat": 14, "sodium": 420 },
+    "defaultServingGrams": 180,
+    "defaultServingUnit": "隻",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "白灼蝦",
+    "displayName": "白灼蝦",
+    "aliases": ["poached shrimp", "白灼海蝦"],
+    "category": "protein",
+    "per100g": { "calories": 99, "protein": 21, "carbs": 0.2, "fat": 1.5, "sodium": 190 },
+    "defaultServingGrams": 200,
+    "defaultServingUnit": "份",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "清蒸魚",
+    "displayName": "清蒸魚",
+    "aliases": ["steamed fish", "蒸魚"],
+    "category": "protein",
+    "per100g": { "calories": 96, "protein": 20, "carbs": 0, "fat": 2, "sodium": 200 },
+    "defaultServingGrams": 300,
+    "defaultServingUnit": "條",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "煎荷包蛋",
+    "displayName": "煎荷包蛋",
+    "aliases": ["fried egg", "荷包蛋", "太陽蛋"],
+    "category": "protein",
+    "per100g": { "calories": 196, "protein": 13, "carbs": 1, "fat": 15, "sodium": 330 },
+    "defaultServingGrams": 60,
+    "defaultServingUnit": "隻",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "例湯",
+    "displayName": "例湯",
+    "aliases": ["soup of the day", "清湯"],
+    "category": "soup",
+    "per100g": { "calories": 35, "protein": 2.5, "carbs": 3, "fat": 1, "sodium": 420 },
+    "defaultServingGrams": 300,
+    "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "C"
+  },
+  {
+    "name": "羅宋湯",
+    "displayName": "羅宋湯",
+    "aliases": ["HK borscht", "港式羅宋湯", "borscht"],
+    "category": "soup",
+    "per100g": { "calories": 52, "protein": 3, "carbs": 6, "fat": 2, "sodium": 380 },
+    "defaultServingGrams": 300,
+    "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "冬瓜排骨湯",
+    "displayName": "冬瓜排骨湯",
+    "aliases": ["winter melon pork rib soup", "冬瓜湯"],
+    "category": "soup",
+    "per100g": { "calories": 28, "protein": 2, "carbs": 3, "fat": 1, "sodium": 280 },
+    "defaultServingGrams": 400,
+    "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "粟米蘿蔔湯",
+    "displayName": "粟米蘿蔔湯",
+    "aliases": ["corn carrot soup", "粟米湯"],
+    "category": "soup",
+    "per100g": { "calories": 30, "protein": 1, "carbs": 5, "fat": 0.5, "sodium": 220 },
+    "defaultServingGrams": 400,
+    "defaultServingUnit": "碗",
+    "venue": "cha_chaan_teng",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "燒鴨飯",
+    "displayName": "燒鴨飯",
+    "aliases": ["roast duck rice", "鴨飯"],
+    "category": "fast_food",
+    "per100g": { "calories": 195, "protein": 10, "carbs": 26, "fat": 6, "sodium": 520 },
+    "defaultServingGrams": 350,
+    "defaultServingUnit": "碟",
+    "venue": "siu_mei",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "炸雞翼",
+    "displayName": "炸雞翼",
+    "aliases": ["fried chicken wings", "雞翼"],
+    "category": "fast_food",
+    "per100g": { "calories": 270, "protein": 18, "carbs": 10, "fat": 17, "sodium": 680 },
+    "defaultServingGrams": 120,
+    "defaultServingUnit": "份",
+    "venue": "fast_food",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "薯條",
+    "displayName": "薯條",
+    "aliases": ["french fries", "炸薯條"],
+    "category": "fast_food",
+    "per100g": { "calories": 312, "protein": 3.4, "carbs": 41, "fat": 15, "sodium": 210 },
+    "defaultServingGrams": 100,
+    "defaultServingUnit": "份",
+    "venue": "fast_food",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "漢堡包",
+    "displayName": "漢堡包",
+    "aliases": ["hamburger", "burger", "漢堡"],
+    "category": "fast_food",
+    "per100g": { "calories": 257, "protein": 13, "carbs": 25, "fat": 11, "sodium": 510 },
+    "defaultServingGrams": 160,
+    "defaultServingUnit": "個",
+    "venue": "fast_food",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "熱狗",
+    "displayName": "熱狗",
+    "aliases": ["hot dog", "腸仔"],
+    "category": "fast_food",
+    "per100g": { "calories": 260, "protein": 10, "carbs": 22, "fat": 15, "sodium": 680 },
+    "defaultServingGrams": 150,
+    "defaultServingUnit": "個",
+    "venue": "fast_food",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "雞蛋",
+    "displayName": "雞蛋",
+    "aliases": ["egg", "蛋"],
+    "category": "whole_food",
+    "per100g": { "calories": 143, "protein": 13, "carbs": 1.1, "fat": 10, "sodium": 142 },
+    "defaultServingGrams": 60,
+    "defaultServingUnit": "隻",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "白飯",
+    "displayName": "白飯",
+    "aliases": ["steamed rice", "米飯", "plain rice"],
+    "category": "whole_food",
+    "per100g": { "calories": 130, "protein": 2.7, "carbs": 28, "fat": 0.3, "sodium": 1 },
+    "defaultServingGrams": 200,
+    "defaultServingUnit": "碗",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "香蕉",
+    "displayName": "香蕉",
+    "aliases": ["banana"],
+    "category": "whole_food",
+    "per100g": { "calories": 89, "protein": 1.1, "carbs": 23, "fat": 0.3, "sugar": 12, "fiber": 2.6, "sodium": 1 },
+    "defaultServingGrams": 120,
+    "defaultServingUnit": "隻",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "蘋果",
+    "displayName": "蘋果",
+    "aliases": ["apple"],
+    "category": "whole_food",
+    "per100g": { "calories": 52, "protein": 0.3, "carbs": 14, "fat": 0.2, "sugar": 10, "fiber": 2.4, "sodium": 1 },
+    "defaultServingGrams": 180,
+    "defaultServingUnit": "個",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "橙",
+    "displayName": "橙",
+    "aliases": ["orange", "柳橙"],
+    "category": "whole_food",
+    "per100g": { "calories": 47, "protein": 0.9, "carbs": 12, "fat": 0.1, "sugar": 9.4, "fiber": 2.4, "sodium": 0 },
+    "defaultServingGrams": 180,
+    "defaultServingUnit": "個",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "西蘭花",
+    "displayName": "西蘭花",
+    "aliases": ["broccoli", "綠花椰菜"],
+    "category": "whole_food",
+    "per100g": { "calories": 34, "protein": 2.8, "carbs": 7, "fat": 0.4, "sugar": 1.7, "fiber": 2.6, "sodium": 33 },
+    "defaultServingGrams": 150,
+    "defaultServingUnit": "份",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "公仔麵",
+    "displayName": "公仔麵",
+    "aliases": ["instant noodles", "出前一丁", "即食麵"],
+    "category": "packaged",
+    "per100g": { "calories": 450, "protein": 9, "carbs": 61, "fat": 19, "sodium": 1820 },
+    "defaultServingGrams": 85,
+    "defaultServingUnit": "包",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "維他奶",
+    "displayName": "維他奶",
+    "aliases": ["Vitasoy", "豆奶", "soy milk"],
+    "category": "packaged",
+    "per100g": { "calories": 55, "protein": 3.5, "carbs": 7, "fat": 1.5, "sugar": 6, "sodium": 50 },
+    "defaultServingGrams": 250,
+    "defaultServingUnit": "盒",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "維他檸檬茶",
+    "displayName": "維他檸檬茶",
+    "aliases": ["Vita lemon tea", "檸檬茶"],
+    "category": "packaged",
+    "per100g": { "calories": 37, "protein": 0, "carbs": 9.2, "fat": 0, "sugar": 8.9, "sodium": 22 },
+    "defaultServingGrams": 250,
+    "defaultServingUnit": "盒",
+    "accuracyTier": "A"
+  },
+  {
+    "name": "薯片",
+    "displayName": "薯片",
+    "aliases": ["potato chips", "chips", "洋芋片"],
+    "category": "packaged",
+    "per100g": { "calories": 536, "protein": 6.5, "carbs": 57, "fat": 32, "sodium": 560 },
+    "defaultServingGrams": 40,
+    "defaultServingUnit": "份",
+    "accuracyTier": "B"
+  },
+  {
+    "name": "梳打餅",
+    "displayName": "梳打餅",
+    "aliases": ["cream crackers", "soda crackers", "蘇打餅"],
+    "category": "packaged",
+    "per100g": { "calories": 462, "protein": 9, "carbs": 65, "fat": 18, "sodium": 700 },
+    "defaultServingGrams": 50,
+    "defaultServingUnit": "份",
+    "accuracyTier": "A"
   }
 ]
