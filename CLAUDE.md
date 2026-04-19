@@ -1,5 +1,20 @@
 # Recallth Backend
 
+## Git / PR Rules — MANDATORY
+
+**NEVER push directly to main.** Branch protection enforces this — direct pushes will be rejected.
+
+Always follow this flow:
+```
+git checkout -b feat/issue-NNN-short-description
+# ... make changes ...
+git push -u origin <branch>
+gh pr create --title "..." --body "..."
+gh pr merge --auto --squash
+```
+
+Create the branch **before** touching any files. Name it `feat/issue-NNN-...` or `fix/issue-NNN-...`.
+
 ## Tech Stack
 - **Runtime:** Node.js + Express + TypeScript
 - **Database:** MongoDB (Mongoose ODM)
