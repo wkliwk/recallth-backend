@@ -6,6 +6,7 @@ import { processChat, checkRateLimit } from '../services/chatService';
 import { Conversation } from '../models/Conversation';
 import { HealthProfile } from '../models/HealthProfile';
 import { CabinetItem } from '../models/CabinetItem';
+import { ExerciseSession } from '../models/ExerciseSession';
 import { MODELS } from '../config/models';
 
 const getGenAI = () => {
@@ -268,6 +269,52 @@ chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promis
         );
       }
       res.json({ success: true, error: null, data: { applied: 'cabinet', action: 'created', itemId: String(item._id) } });
+    } else if (type === 'add_exercise_set') {
+      const sessionId = data.sessionId as string;
+      const exerciseName = data.exerciseName as string;
+      const sets = Number(data.sets);
+      const reps = Number(data.reps);
+      const weightKg = data.weightKg != null ? Number(data.weightKg) : undefined;
+
+      if (!sessionId || !exerciseName || isNaN(sets) || isNaN(reps)) {
+        res.status(400).json({ success: false, error: 'sessionId, exerciseName, sets, and reps are required', data: null });
+        return;
+      }
+      if (!Types.ObjectId.isValid(sessionId)) {
+        res.status(400).json({ success: false, error: 'Invalid sessionId', data: null });
+        return;
+      }
+
+      const session = await ExerciseSession.findById(sessionId);
+      if (!session) {
+        res.status(404).json({ success: false, error: 'Exercise session not found', data: null });
+        return;
+      }
+      if (session.userId.toString() !== userId) {
+        res.status(403).json({ success: false, error: 'Forbidden', data: null });
+        return;
+      }
+
+      const newEntry: { name: string; sets: number; reps: number; weightKg?: number } = {
+        name: exerciseName.trim(),
+        sets,
+        reps,
+        ...(weightKg != null && !isNaN(weightKg) ? { weightKg } : {}),
+      };
+      const updatedExercises = [...(session.exercises ?? []), newEntry];
+      const updated = await ExerciseSession.findByIdAndUpdate(
+        sessionId,
+        { $set: { exercises: updatedExercises } },
+        { new: true }
+      );
+
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'exercise_set', sessionId, exerciseName, sets, reps, weightKg, updated: updated?.exercises } });
     } else {
       res.status(400).json({ success: false, error: `Unknown action type: ${type}`, data: null });
     }
