@@ -1,7 +1,16 @@
 import { Router, Response } from 'express';
 import { Types } from 'mongoose';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { ExerciseSession } from '../models/ExerciseSession';
+import { MODELS } from '../config/models';
+import { buildAiUsage } from '../utils/aiUsage';
+
+const getGenAI = () => {
+  const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GOOGLE_GEMINI_API_KEY is not set');
+  return new GoogleGenerativeAI(apiKey);
+};
 
 const router = Router();
 
@@ -251,6 +260,107 @@ router.delete('/:id', async (req: AuthRequest, res: Response): Promise<void> => 
   } catch (err) {
     console.error('[DELETE /exercise/:id]', err);
     res.status(500).json({ success: false, message: 'Failed to delete exercise session' });
+  }
+});
+
+// ─── POST /exercise/parse — AI natural language parsing ──────────────────
+
+router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { text } = req.body as { text?: unknown };
+
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      res.status(400).json({ success: false, data: null, error: 'text is required' });
+      return;
+    }
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const prompt = `You are a fitness assistant for Hong Kong users. Parse the following exercise/workout description and return structured data.
+The input may be in English, Cantonese, or Traditional Chinese. Understand HK gym/sports culture context.
+
+Exercise description: "${text.trim()}"
+Today's date: ${today}
+
+Return a JSON object with these fields:
+- activityType: one of "gym", "running", "swimming", "basketball", "badminton", "cycling", "yoga", "hiking", "other"
+- activityLabel: string (only if activityType is "other" — the specific activity name; omit otherwise)
+- date: string in YYYY-MM-DD format (use today ${today} if not mentioned; interpret relative terms like "today", "yesterday", "今日", "尋日")
+- durationMinutes: number (positive integer; estimate if not stated explicitly — e.g. a typical gym session is 60 min, a run is 30-45 min)
+- intensity: one of "easy", "moderate", "hard" (infer from weights, pace, effort described; default "moderate")
+- distanceKm: number (only for running/swimming/cycling/hiking if mentioned; omit otherwise)
+- exercises: array of gym exercise sets (only for gym activity; omit otherwise). Each item:
+  - name: string (exercise name, keep original language)
+  - sets: number
+  - reps: number
+  - weightKg: number (omit if not mentioned)
+- notes: string (any extra context worth noting; omit if nothing relevant)
+
+Rules:
+- Always return valid JSON only — no markdown, no explanation
+- durationMinutes must always be present and positive
+- intensity must always be present
+- activityType must always be present
+- For gym: extract each exercise mentioned into the exercises array
+- If only total gym time is mentioned with no exercises, return exercises as empty array or omit
+
+Examples:
+Input: "今日做咗 bench press 3組10下80kg，deadlift 4組5下120kg，gym 60分鐘"
+{"activityType":"gym","date":"${today}","durationMinutes":60,"intensity":"moderate","exercises":[{"name":"bench press","sets":3,"reps":10,"weightKg":80},{"name":"deadlift","sets":4,"reps":5,"weightKg":120}]}
+
+Input: "跑咗5公里，大概40分鐘，今日好攰所以行多過跑"
+{"activityType":"running","date":"${today}","durationMinutes":40,"intensity":"easy","distanceKm":5}
+
+Input: "打咗1個鐘羽毛球"
+{"activityType":"badminton","date":"${today}","durationMinutes":60,"intensity":"moderate"}
+
+Input: "yesterday did 30 min swim, felt like a good workout"
+{"activityType":"swimming","date":"YESTERDAY_DATE","durationMinutes":30,"intensity":"moderate"}
+
+Return ONLY valid JSON.`;
+
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim();
+
+    // Strip markdown code fences if present
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      console.error('[POST /exercise/parse] AI returned non-JSON:', raw);
+      res.status(500).json({ success: false, data: null, error: 'AI returned unexpected format' });
+      return;
+    }
+
+    // Basic validation
+    if (typeof parsed.activityType !== 'string') {
+      res.status(500).json({ success: false, data: null, error: 'AI parse missing activityType' });
+      return;
+    }
+    if (typeof parsed.durationMinutes !== 'number' || (parsed.durationMinutes as number) <= 0) {
+      parsed.durationMinutes = 60;
+    }
+    const validIntensities = ['easy', 'moderate', 'hard'];
+    if (typeof parsed.intensity !== 'string' || !validIntensities.includes(parsed.intensity as string)) {
+      parsed.intensity = 'moderate';
+    }
+    if (typeof parsed.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.date as string)) {
+      parsed.date = today;
+    }
+
+    const usage = result.response.usageMetadata;
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=exercise-parse`);
+
+    res.json({ success: true, data: parsed, aiUsage, error: null });
+  } catch (err) {
+    console.error('[POST /exercise/parse]', err);
+    res.status(500).json({ success: false, data: null, error: 'AI exercise parsing failed' });
   }
 });
 
