@@ -323,7 +323,7 @@ export async function computeWellnessScore(
   const [profileBreakdown, cabinetBreakdown, goalAlignmentResult] = await Promise.all([
     Promise.resolve(scoreProfileCompleteness(profile)),
     Promise.resolve(scoreCabinetQuality(activeItems, hasMajorInteraction)),
-    scoreGoalAlignment(goals, activeItems),
+    scoreGoalAlignment(goals.map(g => typeof g === 'string' ? g : (g as { name?: string }).name ?? '').filter(Boolean), activeItems),
   ]);
 
   const goalBreakdown = goalAlignmentResult.breakdown;
