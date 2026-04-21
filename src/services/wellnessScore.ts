@@ -316,7 +316,9 @@ export async function computeWellnessScore(
   activeItems: ICabinetItem[],
   hasMajorInteraction: boolean
 ): Promise<WellnessScoreResult> {
-  const goals = profile?.goals?.primary ?? [];
+  const goals: string[] = (profile?.goals?.primary ?? []).map(g =>
+    typeof g === 'string' ? g : g.name
+  );
 
   const [profileBreakdown, cabinetBreakdown, goalAlignmentResult] = await Promise.all([
     Promise.resolve(scoreProfileCompleteness(profile)),
