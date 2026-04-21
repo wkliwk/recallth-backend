@@ -178,7 +178,6 @@ goalsRouter.post('/insights', async (req: AuthRequest, res: Response): Promise<v
     const body = req.body as { goalName?: string; goalNotes?: string; language?: string };
     const { goalName, goalNotes, language } = body;
     const lang = (language === 'zh-HK' || language === 'zh-TW') ? language : 'en';
-    console.log(`[goals/insights] language=${JSON.stringify(language)} lang=${lang}`);
 
     if (!goalName || typeof goalName !== 'string' || goalName.trim().length === 0) {
       res.status(400).json({ error: 'goalName is required' });
