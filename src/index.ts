@@ -42,7 +42,7 @@ app.use('/auth', authRouter);
 app.use('/auth', authGoogleRouter);
 app.use('/profile', profileRouter);
 app.use('/profile/auto-extracted', authenticate, extractionReviewRouter);
-app.get('/version', (_req, res) => res.json({ version: 'a9972f7', ts: Date.now() }));
+app.get('/version', (_req, res) => res.json({ version: process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? 'dev', ts: Date.now() }));
 app.use('/img', imageProxyRouter);  // image proxy — no auth (used as <img src>), at /img/image-proxy
 app.use('/cabinet', authenticate, cabinetRouter);
 app.use('/cabinet/interactions', authenticate, interactionsRouter);
