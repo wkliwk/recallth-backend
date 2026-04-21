@@ -175,8 +175,9 @@ goalsRouter.post('/insights', async (req: AuthRequest, res: Response): Promise<v
     const userId = req.userId;
     if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
 
-    const body = req.body as { goalName?: string; goalNotes?: string };
-    const { goalName, goalNotes } = body;
+    const body = req.body as { goalName?: string; goalNotes?: string; language?: string };
+    const { goalName, goalNotes, language } = body;
+    const lang = (language === 'zh-HK' || language === 'zh-TW') ? language : 'en';
 
     if (!goalName || typeof goalName !== 'string' || goalName.trim().length === 0) {
       res.status(400).json({ error: 'goalName is required' });
@@ -206,6 +207,12 @@ goalsRouter.post('/insights', async (req: AuthRequest, res: Response): Promise<v
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
+    const langInstruction = lang === 'zh-HK'
+      ? 'Respond in natural conversational Cantonese (廣東話) using particles like 係、唔、嘅、喺、囉. All "reason" and "summary" fields must be in Cantonese.'
+      : lang === 'zh-TW'
+      ? 'Respond in Traditional Chinese (繁體中文). All "reason" and "summary" fields must be in Traditional Chinese.'
+      : 'Respond in English.';
+
     const prompt = `You are a supplement advisor. Analyse how the user's supplement cabinet aligns with their health goal.
 
 Goal: "${goalName.trim()}"
@@ -213,6 +220,8 @@ ${goalNotes ? `Goal notes: "${goalNotes.trim()}"` : ''}
 
 User's cabinet:
 ${JSON.stringify(cabinetSummary, null, 2)}
+
+Language instruction: ${langInstruction}
 
 Return ONLY valid JSON, no markdown:
 {
