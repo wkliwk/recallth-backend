@@ -208,20 +208,20 @@ goalsRouter.post('/insights', async (req: AuthRequest, res: Response): Promise<v
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
     const langInstruction = lang === 'zh-HK'
-      ? 'Respond in natural conversational Cantonese (廣東話) using particles like 係、唔、嘅、喺、囉. All "reason" and "summary" fields must be in Cantonese.'
+      ? 'IMPORTANT: You MUST write ALL text in natural conversational Cantonese (廣東話). Use Cantonese particles like 係、唔、嘅、喺、囉、啩. Every "reason" and "summary" value must be written entirely in Cantonese — do NOT use English.'
       : lang === 'zh-TW'
-      ? 'Respond in Traditional Chinese (繁體中文). All "reason" and "summary" fields must be in Traditional Chinese.'
+      ? 'IMPORTANT: You MUST write ALL text in Traditional Chinese (繁體中文). Every "reason" and "summary" value must be written entirely in Traditional Chinese — do NOT use English.'
       : 'Respond in English.';
 
     const prompt = `You are a supplement advisor. Analyse how the user's supplement cabinet aligns with their health goal.
+
+LANGUAGE REQUIREMENT: ${langInstruction}
 
 Goal: "${goalName.trim()}"
 ${goalNotes ? `Goal notes: "${goalNotes.trim()}"` : ''}
 
 User's cabinet:
 ${JSON.stringify(cabinetSummary, null, 2)}
-
-Language instruction: ${langInstruction}
 
 Return ONLY valid JSON, no markdown:
 {
@@ -235,7 +235,8 @@ Rules:
 - missing: supplements NOT in the cabinet that would meaningfully help (max 4, evidence-based)
 - summary: 1–2 sentences about the user's current stack vs this goal
 - Only include items in "supporting" that are in the cabinet list above
-- Be specific about why each supplement helps`;
+- Be specific about why each supplement helps
+- REMINDER: all "reason" and "summary" text must follow the language requirement above`;
 
     let raw: string;
     try {
