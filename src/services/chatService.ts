@@ -218,6 +218,7 @@ Action types:
 - "save_profile": saves to health profile. data keys use dot notation: "body.height", "body.weight", "body.age", "body.sex", "exercise.frequency", "exercise.type", "exercise.goals", "goals.primary" (array), "diet.dietType", "sleep.quality", etc.
 - "add_cabinet": adds supplement to cabinet. data must have "name" and "type" ("supplement"|"medication"|"vitamin"), optionally "dosage", "frequency", "timing", "brand".
 - "add_exercise_set": adds an exercise entry to the current exercise session. Only use when a Session ID is present in the page context. data MUST have: "sessionId" (copy exactly from "Session ID:" in the page context), "exerciseName" (string), "sets" (number), "reps" (number). Optionally: "weightKg" (number). Example: if user says "幫我加多一個 Bench Press set 20下 80公斤", output {"type":"add_exercise_set","label":"加 Bench Press 1×20 @ 80kg","data":{"sessionId":"abc123","exerciseName":"Bench Press","sets":1,"reps":20,"weightKg":80}}
+- "plan_exercise": saves a planned workout session for a future date. Use when the user asks for a workout plan or asks what they should do tomorrow / next session. data MUST have: "activityType" (one of: gym, running, swimming, basketball, badminton, cycling, yoga, hiking, other), "date" (YYYY-MM-DD, the suggested date), "durationMinutes" (number), "intensity" (easy|moderate|hard). Optionally: "notes" (string, brief description). Label should say "加入計劃：[activity] [duration]分鐘" in the user's language. Example: {"type":"plan_exercise","label":"加入計劃：跑步 30 分鐘","data":{"activityType":"running","date":"2026-04-23","durationMinutes":30,"intensity":"easy","notes":"輕鬆恢復跑"}}
 
 Rules:
 - Only include actions for NEW data not already in the user's profile/cabinet above
@@ -464,7 +465,7 @@ async function generateTitleAndSummary(
 
 // --- Parse actions JSON block from AI response ---
 interface ChatAction {
-  type: 'save_profile' | 'add_cabinet';
+  type: 'save_profile' | 'add_cabinet' | 'add_exercise_set' | 'plan_exercise';
   label: string;
   data: Record<string, unknown>;
 }

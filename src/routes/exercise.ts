@@ -46,6 +46,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.userId as string;
     const {
+      status,
       activityType,
       activityLabel,
       date,
@@ -55,6 +56,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
       exercises,
       notes,
     } = req.body as {
+      status?: unknown;
       activityType?: unknown;
       activityLabel?: unknown;
       date?: unknown;
@@ -64,6 +66,8 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
       exercises?: unknown;
       notes?: unknown;
     };
+
+    const isPlanned = status === 'planned';
 
     // Required field validation
     if (typeof activityType !== 'string' || activityType.trim().length === 0) {
@@ -76,26 +80,29 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
       return;
     }
 
-    if (typeof durationMinutes !== 'number' || durationMinutes <= 0) {
-      res.status(400).json({ success: false, message: 'durationMinutes must be a positive number' });
-      return;
-    }
-
-    const validIntensities = ['easy', 'moderate', 'hard'] as const;
-    if (typeof intensity !== 'string' || !validIntensities.includes(intensity as typeof validIntensities[number])) {
-      res.status(400).json({
-        success: false,
-        message: `intensity must be one of: ${validIntensities.join(', ')}`,
-      });
-      return;
+    // duration and intensity required for completed; optional for planned
+    if (!isPlanned) {
+      if (typeof durationMinutes !== 'number' || durationMinutes <= 0) {
+        res.status(400).json({ success: false, message: 'durationMinutes must be a positive number' });
+        return;
+      }
+      const validIntensities = ['easy', 'moderate', 'hard'] as const;
+      if (typeof intensity !== 'string' || !validIntensities.includes(intensity as typeof validIntensities[number])) {
+        res.status(400).json({
+          success: false,
+          message: `intensity must be one of: ${validIntensities.join(', ')}`,
+        });
+        return;
+      }
     }
 
     const sessionData: Record<string, unknown> = {
       userId,
+      status: isPlanned ? 'planned' : 'completed',
       activityType: activityType.trim(),
       date,
-      durationMinutes,
-      intensity,
+      durationMinutes: typeof durationMinutes === 'number' && durationMinutes > 0 ? durationMinutes : 0,
+      intensity: typeof intensity === 'string' ? intensity : 'moderate',
     };
 
     if (typeof activityLabel === 'string' && activityLabel.trim().length > 0) {

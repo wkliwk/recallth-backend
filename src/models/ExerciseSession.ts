@@ -16,6 +16,7 @@ export interface ExerciseSet {
 
 export interface IExerciseSession extends Document {
   userId: Types.ObjectId;
+  status: 'planned' | 'completed';
   activityType: string;
   activityLabel?: string;
   date: string;
@@ -45,6 +46,7 @@ const ExerciseSetSchema = new Schema<ExerciseSet>(
 const ExerciseSessionSchema = new Schema<IExerciseSession>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    status: { type: String, enum: ['planned', 'completed'], default: 'completed' },
     activityType: { type: String, required: true, trim: true },
     activityLabel: { type: String, trim: true },
     date: { type: String, required: true },
