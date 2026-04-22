@@ -315,6 +315,33 @@ chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promis
         );
       }
       res.json({ success: true, error: null, data: { applied: 'exercise_set', sessionId, exerciseName, sets, reps, weightKg, updated: updated?.exercises } });
+    } else if (type === 'plan_exercise') {
+      const activityType = data.activityType as string;
+      const date = data.date as string;
+      if (!activityType || !date) {
+        res.status(400).json({ success: false, error: 'activityType and date are required for plan_exercise', data: null });
+        return;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ success: false, error: 'date must be YYYY-MM-DD', data: null });
+        return;
+      }
+      const session = await ExerciseSession.create({
+        userId: userObjectId,
+        status: 'planned',
+        activityType: activityType.trim(),
+        date,
+        durationMinutes: typeof data.durationMinutes === 'number' ? data.durationMinutes : 0,
+        intensity: typeof data.intensity === 'string' ? data.intensity : 'moderate',
+        notes: typeof data.notes === 'string' ? data.notes.trim() : undefined,
+      });
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'plan_exercise', sessionId: String(session._id) } });
     } else {
       res.status(400).json({ success: false, error: `Unknown action type: ${type}`, data: null });
     }

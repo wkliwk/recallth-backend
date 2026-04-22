@@ -3,7 +3,7 @@ import { Schema, model, Document, Types } from 'mongoose';
 export type MessageRole = 'user' | 'assistant';
 
 export interface IMessageAction {
-  type: 'save_profile' | 'add_cabinet' | 'add_exercise_set';
+  type: 'save_profile' | 'add_cabinet' | 'add_exercise_set' | 'plan_exercise';
   label: string;
   data: Record<string, unknown>;
   applied?: boolean;
@@ -27,7 +27,7 @@ export interface IConversation extends Document {
 
 const ActionSchema = new Schema(
   {
-    type: { type: String, enum: ['save_profile', 'add_cabinet', 'add_exercise_set'], required: true },
+    type: { type: String, enum: ['save_profile', 'add_cabinet', 'add_exercise_set', 'plan_exercise'], required: true },
     label: { type: String, required: true },
     data: { type: Schema.Types.Mixed, required: true },
     applied: { type: Boolean, default: false },
