@@ -2,16 +2,15 @@ import { Schema, model, Document, Types } from 'mongoose';
 
 export interface ExerciseSet {
   name: string;
-  type?: 'strength' | 'cardio' | 'stretch' | 'hiit';
-  // strength fields
+  type?: 'strength' | 'bodyweight' | 'timed' | 'cardio' | 'session';
+  // strength / bodyweight fields
   sets?: number;
   reps?: number;
-  weightKg?: number;
-  // cardio / stretch fields
-  durationMin?: number;
+  weightKg?: number;       // required for strength; optional for bodyweight
+  // timed fields
+  durationMin?: number;    // used by timed (sets × duration) and session (duration only)
+  // cardio fields
   distanceKm?: number;
-  // hiit fields
-  rounds?: number;
 }
 
 export interface IExerciseSession extends Document {
@@ -32,13 +31,13 @@ export interface IExerciseSession extends Document {
 const ExerciseSetSchema = new Schema<ExerciseSet>(
   {
     name: { type: String, required: true, trim: true },
-    type: { type: String, enum: ['strength', 'cardio', 'stretch', 'hiit'], default: 'strength' },
+    // 'stretch' and 'hiit' kept in enum for backwards compat with existing DB documents
+    type: { type: String, enum: ['strength', 'bodyweight', 'timed', 'cardio', 'session', 'stretch', 'hiit'], default: 'strength' },
     sets: { type: Number },
     reps: { type: Number },
     weightKg: { type: Number },
     durationMin: { type: Number },
     distanceKm: { type: Number },
-    rounds: { type: Number },
   },
   { _id: false },
 );
