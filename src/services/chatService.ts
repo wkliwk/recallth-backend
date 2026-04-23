@@ -444,10 +444,17 @@ function generateTitle(message: string): string {
 // --- AI-generated title + summary after first exchange ---
 async function generateTitleAndSummary(
   conversationId: string,
-  firstUserMessage: string
+  firstUserMessage: string,
+  language: DetectedLanguage
 ): Promise<void> {
   try {
-    const prompt = `Given this user question: "${firstUserMessage.slice(0, 500)}", write a conversation title in 6–8 words and a one-sentence summary. Return JSON only, no markdown: {"title": "...", "summary": "..."}`;
+    const langInstruction =
+      language === 'zh-HK'
+        ? 'Write the title and summary in Cantonese (廣東話).'
+        : language === 'zh-TW'
+          ? 'Write the title and summary in Traditional Chinese (繁體中文).'
+          : 'Write the title and summary in English.';
+    const prompt = `Given this user question: "${firstUserMessage.slice(0, 500)}", write a conversation title in 6–8 words and a one-sentence summary. ${langInstruction} Return JSON only, no markdown: {"title": "...", "summary": "..."}`;
     const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
     const result = await model.generateContent(prompt);
     const text = result.response.text().trim();
@@ -592,47 +599,36 @@ export async function processChat(
     SideEffect.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: -1 }).limit(10),
   ]);
 
-  // Fetch or create conversation
-  let conversation;
+  // For existing conversations, load them now; for new ones, defer creation until after AI succeeds
+  let existingConversation: Awaited<ReturnType<typeof Conversation.findOne>> | null = null;
+  let existingHistory: Array<{ role: 'user' | 'model'; parts: [{ text: string }] }> = [];
+
   if (conversationId) {
-    conversation = await Conversation.findOne({
+    existingConversation = await Conversation.findOne({
       _id: new Types.ObjectId(conversationId),
       userId: userObjectId,
     });
-    if (!conversation) {
+    if (!existingConversation) {
       const err = new Error('Conversation not found') as Error & { statusCode: number };
       err.statusCode = 404;
       throw err;
     }
-  } else {
-    conversation = await Conversation.create({
-      userId: userObjectId,
-      title: sessionTitle ?? generateTitle(userMessage),
-      messages: [],
-    });
+    // Build history for Gemini from existing messages (last 20, excluding the new user message)
+    existingHistory = existingConversation.messages.slice(-20).map((m) => ({
+      role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
+      parts: [{ text: m.content }] as [{ text: string }],
+    }));
   }
 
-  // Append user message
-  const userMsg = { role: 'user' as const, content: userMessage, timestamp: new Date() };
-  conversation.messages.push(userMsg);
-
-  // Build message history for Gemini (last 20 messages for context window, excluding the latest user message)
-  const allMessages = conversation.messages.slice(-20);
-  // History is all messages except the last user message (which we send via sendMessage)
-  const historyMessages = allMessages.slice(0, -1);
-  const history = historyMessages.map((m) => ({
-    role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
-    parts: [{ text: m.content }],
-  }));
-
-  // Call Gemini for chat response
+  // Call Gemini BEFORE creating/saving any conversation record
+  // This prevents ghost conversations when the AI call fails
   const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects);
   const model = getGenAI().getGenerativeModel({
     model: MODELS.CHAT,
     systemInstruction: systemPrompt,
   });
 
-  const chat = model.startChat({ history });
+  const chat = model.startChat({ history: existingHistory });
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
@@ -644,6 +640,7 @@ export async function processChat(
     });
   }
 
+  // AI call — if this throws, no conversation record is created
   const chatResult = await chat.sendMessage(messageParts);
   const rawContent = chatResult.response.text();
 
@@ -656,19 +653,36 @@ export async function processChat(
   const { clean: withoutActions, actions } = parseActions(rawContent);
   const { clean: assistantContent, suggestions } = parseSuggestions(withoutActions);
 
+  const userMsg = { role: 'user' as const, content: userMessage, timestamp: new Date() };
   const assistantMsg = {
     role: 'assistant' as const,
     content: assistantContent,
     timestamp: new Date(),
     ...(actions.length > 0 ? { actions: actions.map((a) => ({ ...a, applied: false })) } : {}),
   };
-  conversation.messages.push(assistantMsg);
-  await conversation.save();
+
+  // Now persist — AI succeeded so it's safe to create/update the conversation
+  let conversation: NonNullable<typeof existingConversation>;
+  const isNewConversation = !conversationId;
+  if (existingConversation) {
+    existingConversation.messages.push(userMsg, assistantMsg);
+    await existingConversation.save();
+    conversation = existingConversation;
+  } else {
+    // Strip any [Page context ...] prefix injected by the frontend before using as title
+    const titleSource = userMessage.replace(/^\[Page context[^\]]*\][\s\S]*?---\s*\n+(?:User:\s*)?/i, '').trim();
+    conversation = await Conversation.create({
+      userId: userObjectId,
+      title: sessionTitle ?? generateTitle(titleSource),
+      messages: [userMsg, assistantMsg],
+    });
+  }
 
   // Fire async title+summary generation after first exchange (non-blocking)
   // Skip if a sessionTitle was provided — it's already human-readable
-  if (conversation.messages.length === 2 && !conversationId && !sessionTitle) {
-    void generateTitleAndSummary(String(conversation._id), userMessage);
+  if (isNewConversation && !sessionTitle) {
+    const titleSource = userMessage.replace(/^\[Page context[^\]]*\][\s\S]*?---\s*\n+(?:User:\s*)?/i, '').trim();
+    void generateTitleAndSummary(String(conversation._id), titleSource, language);
   }
 
   // Run extraction in background (non-blocking) — data is NOT auto-applied,
