@@ -299,11 +299,19 @@ Return a JSON object with these fields:
 - durationMinutes: number (positive integer; estimate if not stated explicitly — e.g. a typical gym session is 60 min, a run is 30-45 min)
 - intensity: one of "easy", "moderate", "hard" (infer from weights, pace, effort described; default "moderate")
 - distanceKm: number (only for running/swimming/cycling/hiking if mentioned; omit otherwise)
-- exercises: array of gym exercise sets (only for gym activity; omit otherwise). Each item:
+- exercises: array of exercise sets (for gym or any activity with specific exercises). Each item has:
   - name: string (exercise name, keep original language)
-  - sets: number
-  - reps: number
-  - weightKg: number (omit if not mentioned)
+  - type: one of "strength", "bodyweight", "timed", "cardio", "session"
+    - "strength": barbell/dumbbell/machine with weight (bench press, squat, deadlift)
+    - "bodyweight": sets × reps with no weight required (push-ups, pull-ups, sit-ups, dips)
+    - "timed": held for time (plank 平板支撐, wall sit, dead hang, L-sit)
+    - "cardio": distance + duration (running, cycling, rowing machine)
+    - "session": duration only (yoga, stretching, general activity)
+  - sets: number (for strength/bodyweight/timed)
+  - reps: number (for strength/bodyweight only)
+  - weightKg: number (for strength only; omit for bodyweight unless explicitly mentioned)
+  - durationMin: number (for timed in minutes e.g. 30 sec = 0.5; for session in minutes)
+  - distanceKm: number (for cardio only)
 - notes: string (any extra context worth noting; omit if nothing relevant)
 
 Rules:
@@ -311,12 +319,16 @@ Rules:
 - durationMinutes must always be present and positive
 - intensity must always be present
 - activityType must always be present
-- For gym: extract each exercise mentioned into the exercises array
-- If only total gym time is mentioned with no exercises, return exercises as empty array or omit
+- For gym: extract each exercise into the exercises array with correct type
+- Plank/平板支撐 = timed type, not strength
+- Push-ups/pull-ups/dips with no weight mentioned = bodyweight type
 
 Examples:
-Input: "今日做咗 bench press 3組10下80kg，deadlift 4組5下120kg，gym 60分鐘"
-{"activityType":"gym","date":"${today}","durationMinutes":60,"intensity":"moderate","exercises":[{"name":"bench press","sets":3,"reps":10,"weightKg":80},{"name":"deadlift","sets":4,"reps":5,"weightKg":120}]}
+Input: "今日做咗 bench press 3組10下80kg，deadlift 4組5下120kg，平板支撐5組30秒，gym 60分鐘"
+{"activityType":"gym","date":"${today}","durationMinutes":60,"intensity":"moderate","exercises":[{"name":"bench press","type":"strength","sets":3,"reps":10,"weightKg":80},{"name":"deadlift","type":"strength","sets":4,"reps":5,"weightKg":120},{"name":"平板支撐","type":"timed","sets":5,"durationMin":0.5}]}
+
+Input: "做咗100下掌上壓，4組pull-ups每組12下"
+{"activityType":"gym","date":"${today}","durationMinutes":30,"intensity":"moderate","exercises":[{"name":"掌上壓","type":"bodyweight","sets":4,"reps":25},{"name":"pull-ups","type":"bodyweight","sets":4,"reps":12}]}
 
 Input: "跑咗5公里，大概40分鐘，今日好攰所以行多過跑"
 {"activityType":"running","date":"${today}","durationMinutes":40,"intensity":"easy","distanceKm":5}
@@ -324,8 +336,8 @@ Input: "跑咗5公里，大概40分鐘，今日好攰所以行多過跑"
 Input: "打咗1個鐘羽毛球"
 {"activityType":"badminton","date":"${today}","durationMinutes":60,"intensity":"moderate"}
 
-Input: "yesterday did 30 min swim, felt like a good workout"
-{"activityType":"swimming","date":"YESTERDAY_DATE","durationMinutes":30,"intensity":"moderate"}
+Input: "做咗45分鐘瑜伽"
+{"activityType":"yoga","date":"${today}","durationMinutes":45,"intensity":"easy","exercises":[{"name":"瑜伽","type":"session","durationMin":45}]}
 
 Return ONLY valid JSON.`;
 
