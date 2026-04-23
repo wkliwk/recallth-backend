@@ -104,7 +104,7 @@ chatRouter.get('/history', async (req: AuthRequest, res: Response): Promise<void
   const skip = (page - 1) * limit;
 
   const conversations = await Conversation.aggregate([
-    { $match: { userId: new Types.ObjectId(userId) } },
+    { $match: { userId: new Types.ObjectId(userId), 'messages.0': { $exists: true } } },
     { $sort: { createdAt: -1 } },
     { $skip: skip },
     { $limit: limit },
