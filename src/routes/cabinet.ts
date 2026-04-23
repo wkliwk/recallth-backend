@@ -265,7 +265,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
