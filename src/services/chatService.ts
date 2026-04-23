@@ -16,6 +16,35 @@ const getGenAI = () => {
   return new GoogleGenerativeAI(apiKey);
 };
 
+// Returns true for transient errors worth retrying (503 overload, 429 rate limit)
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /503|Service Unavailable|overloaded|high demand|429|quota/i.test(msg);
+}
+
+// Send a chat message with automatic fallback to a secondary model on transient errors
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function sendWithFallback(
+  systemPrompt: string,
+  history: Array<{ role: 'user' | 'model'; parts: [{ text: string }] }>,
+  messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }>
+): Promise<any> {
+  const models = [MODELS.CHAT, MODELS.CHAT_FALLBACK];
+  let lastErr: unknown;
+  for (const modelName of models) {
+    try {
+      const model = getGenAI().getGenerativeModel({ model: modelName, systemInstruction: systemPrompt });
+      const chat = model.startChat({ history });
+      return await chat.sendMessage(messageParts);
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryable(err)) throw err; // non-retryable — propagate immediately
+      console.warn(`[Chat] ${modelName} returned transient error, trying next model:`, err instanceof Error ? err.message : err);
+    }
+  }
+  throw lastErr;
+}
+
 // --- Rate limiting ---
 interface RateLimitEntry {
   count: number;
@@ -623,12 +652,6 @@ export async function processChat(
   // Call Gemini BEFORE creating/saving any conversation record
   // This prevents ghost conversations when the AI call fails
   const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects);
-  const model = getGenAI().getGenerativeModel({
-    model: MODELS.CHAT,
-    systemInstruction: systemPrompt,
-  });
-
-  const chat = model.startChat({ history: existingHistory });
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
@@ -640,8 +663,8 @@ export async function processChat(
     });
   }
 
-  // AI call — if this throws, no conversation record is created
-  const chatResult = await chat.sendMessage(messageParts);
+  // AI call with automatic fallback — if this throws, no conversation record is created
+  const chatResult = await sendWithFallback(systemPrompt, existingHistory, messageParts);
   const rawContent = chatResult.response.text();
 
   const usage = chatResult.response.usageMetadata;
