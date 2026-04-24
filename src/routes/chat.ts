@@ -342,6 +342,143 @@ chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promis
         );
       }
       res.json({ success: true, error: null, data: { applied: 'plan_exercise', sessionId: String(session._id) } });
+    } else if (type === 'save_injury') {
+      const name = data.name as string;
+      if (!name) {
+        res.status(400).json({ success: false, error: 'name is required for save_injury', data: null });
+        return;
+      }
+      const injury = {
+        name: name.trim(),
+        location: typeof data.location === 'string' ? data.location.trim() : undefined,
+        onsetDate: typeof data.onsetDate === 'string' ? data.onsetDate : undefined,
+        status: (data.status === 'active' || data.status === 'recovering') ? data.status : 'active' as const,
+        notes: typeof data.notes === 'string' ? data.notes.trim() : undefined,
+        lastCheckedAt: new Date(),
+      };
+      await HealthProfile.findOneAndUpdate(
+        { userId: userObjectId },
+        { $push: { injuries: injury } },
+        { upsert: true, new: true }
+      );
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'injury', action: 'created', name: injury.name } });
+    } else if (type === 'update_injury') {
+      const name = data.name as string;
+      const status = data.status as string;
+      if (!name || !status) {
+        res.status(400).json({ success: false, error: 'name and status are required for update_injury', data: null });
+        return;
+      }
+      const validStatuses = ['active', 'recovering', 'resolved'];
+      if (!validStatuses.includes(status)) {
+        res.status(400).json({ success: false, error: 'status must be active, recovering, or resolved', data: null });
+        return;
+      }
+      // Find profile and update matching injury by name (case-insensitive)
+      const profile = await HealthProfile.findOne({ userId: userObjectId });
+      if (!profile) {
+        res.status(404).json({ success: false, error: 'Health profile not found', data: null });
+        return;
+      }
+      const injuryIndex = profile.injuries.findIndex(
+        (inj) => inj.name.toLowerCase() === name.toLowerCase().trim()
+      );
+      if (injuryIndex === -1) {
+        res.status(404).json({ success: false, error: `Injury "${name}" not found in profile`, data: null });
+        return;
+      }
+      const updateFields: Record<string, unknown> = {
+        [`injuries.${injuryIndex}.status`]: status,
+        [`injuries.${injuryIndex}.lastCheckedAt`]: new Date(),
+      };
+      if (typeof data.notes === 'string') {
+        updateFields[`injuries.${injuryIndex}.notes`] = data.notes.trim();
+      }
+      await HealthProfile.updateOne({ userId: userObjectId }, { $set: updateFields });
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'injury', action: 'updated', name, status } });
+    } else if (type === 'save_training_goal') {
+      const description = data.description as string;
+      if (!description) {
+        res.status(400).json({ success: false, error: 'description is required for save_training_goal', data: null });
+        return;
+      }
+      const goal: Record<string, unknown> = {
+        description: description.trim(),
+        createdAt: new Date(),
+      };
+      if (typeof data.targetMetric === 'string') goal.targetMetric = data.targetMetric.trim();
+      if (typeof data.targetValue === 'number') goal.targetValue = data.targetValue;
+      if (typeof data.targetUnit === 'string') goal.targetUnit = data.targetUnit.trim();
+      await HealthProfile.findOneAndUpdate(
+        { userId: userObjectId },
+        { $push: { trainingGoals: goal } },
+        { upsert: true, new: true }
+      );
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'training_goal', action: 'created', description: goal.description } });
+    } else if (type === 'save_sport') {
+      const sport = data.sport as string;
+      if (!sport) {
+        res.status(400).json({ success: false, error: 'sport is required for save_sport', data: null });
+        return;
+      }
+      const sportEntry: Record<string, unknown> = {
+        sport: sport.trim(),
+      };
+      if (typeof data.experience === 'string') sportEntry.experience = data.experience.trim();
+      const validSportStatuses = ['active', 'learning', 'past'];
+      sportEntry.status = typeof data.status === 'string' && validSportStatuses.includes(data.status) ? data.status : 'active';
+      await HealthProfile.findOneAndUpdate(
+        { userId: userObjectId },
+        { $push: { sportsBackground: sportEntry } },
+        { upsert: true, new: true }
+      );
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'sport', action: 'created', sport: sportEntry.sport } });
+    } else if (type === 'update_focus_areas') {
+      const focusAreas = data.focusAreas;
+      if (!Array.isArray(focusAreas)) {
+        res.status(400).json({ success: false, error: 'focusAreas array is required for update_focus_areas', data: null });
+        return;
+      }
+      const sanitized = focusAreas
+        .filter((a): a is string => typeof a === 'string')
+        .map((a) => a.trim())
+        .filter((a) => a.length > 0);
+      await HealthProfile.findOneAndUpdate(
+        { userId: userObjectId },
+        { $set: { focusAreas: sanitized } },
+        { upsert: true, new: true }
+      );
+      if (conversationId && messageIndex != null && actionIndex != null) {
+        await Conversation.updateOne(
+          { _id: new Types.ObjectId(conversationId), userId: userObjectId },
+          { $set: { [`messages.${messageIndex}.actions.${actionIndex}.applied`]: true } }
+        );
+      }
+      res.json({ success: true, error: null, data: { applied: 'focus_areas', action: 'updated', focusAreas: sanitized } });
     } else {
       res.status(400).json({ success: false, error: `Unknown action type: ${type}`, data: null });
     }
