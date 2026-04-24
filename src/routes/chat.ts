@@ -326,6 +326,21 @@ chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promis
         res.status(400).json({ success: false, error: 'date must be YYYY-MM-DD', data: null });
         return;
       }
+      const validExTypes = ['strength', 'bodyweight', 'timed', 'cardio', 'session'];
+      const exercises = Array.isArray(data.exercises)
+        ? (data.exercises as Record<string, unknown>[])
+            .filter((ex) => typeof ex.name === 'string' && ex.name.trim().length > 0)
+            .map((ex) => {
+              const exType = validExTypes.includes(ex.type as string) ? (ex.type as string) : 'strength';
+              const exOut: Record<string, unknown> = { name: (ex.name as string).trim(), type: exType };
+              if (typeof ex.sets === 'number' && ex.sets > 0) exOut.sets = ex.sets;
+              if (typeof ex.reps === 'number' && ex.reps > 0) exOut.reps = ex.reps;
+              if (typeof ex.weightKg === 'number' && ex.weightKg > 0) exOut.weightKg = ex.weightKg;
+              if (typeof ex.durationMin === 'number' && ex.durationMin > 0) exOut.durationMin = ex.durationMin;
+              if (typeof ex.distanceKm === 'number' && ex.distanceKm > 0) exOut.distanceKm = ex.distanceKm;
+              return exOut;
+            })
+        : [];
       const session = await ExerciseSession.create({
         userId: userObjectId,
         status: 'planned',
@@ -334,6 +349,7 @@ chatRouter.post('/apply-action', async (req: AuthRequest, res: Response): Promis
         durationMinutes: typeof data.durationMinutes === 'number' ? data.durationMinutes : 0,
         intensity: typeof data.intensity === 'string' ? data.intensity : 'moderate',
         notes: typeof data.notes === 'string' ? data.notes.trim() : undefined,
+        ...(exercises.length > 0 ? { exercises } : {}),
       });
       if (conversationId && messageIndex != null && actionIndex != null) {
         await Conversation.updateOne(
