@@ -50,6 +50,29 @@ export interface IGoals {
   primary?: Array<string | IGoalItem>;
 }
 
+export interface ITrainingGoal {
+  description: string;
+  targetMetric?: string;
+  targetValue?: number;
+  targetUnit?: string;
+  createdAt: Date;
+}
+
+export interface ISportsBackground {
+  sport: string;
+  experience?: string;
+  status: 'active' | 'learning' | 'past';
+}
+
+export interface IInjury {
+  name: string;
+  location?: string;
+  onsetDate?: string;
+  status: 'active' | 'recovering' | 'resolved';
+  notes?: string;
+  lastCheckedAt?: Date;
+}
+
 export interface IBloodwork {
   hba1c?: number;         // %
   totalCholesterol?: number; // mmol/L
@@ -85,6 +108,11 @@ export interface IHealthProfile extends Document {
   lifestyle: ILifestyle;
   goals: IGoals;
   bloodwork: IBloodwork;
+  trainingGoals: ITrainingGoal[];
+  focusAreas: string[];
+  sportsBackground: ISportsBackground[];
+  injuries: IInjury[];
+  freeformNotes: string;
   changeHistory: IChangeEntry[];
   createdAt: Date;
   updatedAt: Date;
@@ -167,6 +195,38 @@ const BloodworkSchema = new Schema<IBloodwork>(
   { _id: false }
 );
 
+const TrainingGoalSchema = new Schema<ITrainingGoal>(
+  {
+    description: { type: String, required: true },
+    targetMetric: { type: String },
+    targetValue: { type: Number },
+    targetUnit: { type: String },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const SportsBackgroundSchema = new Schema<ISportsBackground>(
+  {
+    sport: { type: String, required: true },
+    experience: { type: String },
+    status: { type: String, enum: ['active', 'learning', 'past'], default: 'active' },
+  },
+  { _id: false }
+);
+
+const InjurySchema = new Schema<IInjury>(
+  {
+    name: { type: String, required: true },
+    location: { type: String },
+    onsetDate: { type: String },
+    status: { type: String, enum: ['active', 'recovering', 'resolved'], default: 'active' },
+    notes: { type: String },
+    lastCheckedAt: { type: Date },
+  },
+  { _id: false }
+);
+
 const ChangeEntrySchema = new Schema<IChangeEntry>(
   {
     field: { type: String, required: true },
@@ -188,6 +248,11 @@ const HealthProfileSchema = new Schema<IHealthProfile>(
     lifestyle: { type: LifestyleSchema, default: () => ({}) },
     goals: { type: GoalsSchema, default: () => ({}) },
     bloodwork: { type: BloodworkSchema, default: () => ({}) },
+    trainingGoals: { type: [TrainingGoalSchema], default: [] },
+    focusAreas: { type: [String], default: [] },
+    sportsBackground: { type: [SportsBackgroundSchema], default: [] },
+    injuries: { type: [InjurySchema], default: [] },
+    freeformNotes: { type: String, default: '' },
     changeHistory: { type: [ChangeEntrySchema], default: [] },
   },
   { timestamps: true }

@@ -106,6 +106,11 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
         lifestyle: {},
         goals: {},
         bloodwork: {},
+        trainingGoals: [],
+        focusAreas: [],
+        sportsBackground: [],
+        injuries: [],
+        freeformNotes: '',
         changeHistory: [],
       },
       error: null,
@@ -126,15 +131,19 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
     return;
   }
 
-  // Only accept recognised top-level category keys
-  const ALLOWED_CATEGORIES = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals', 'bloodwork'] as const;
-  type Category = typeof ALLOWED_CATEGORIES[number];
+  // Only accept recognised top-level keys
+  // Object categories use dot-notation merging; direct fields are set as-is
+  const OBJECT_CATEGORIES = ['body', 'diet', 'exercise', 'sleep', 'lifestyle', 'goals', 'bloodwork'] as const;
+  const DIRECT_FIELDS = ['trainingGoals', 'focusAreas', 'sportsBackground', 'injuries', 'freeformNotes'] as const;
+  type ObjectCategory = typeof OBJECT_CATEGORIES[number];
+  type DirectField = typeof DIRECT_FIELDS[number];
+  const ALL_ALLOWED = [...OBJECT_CATEGORIES, ...DIRECT_FIELDS] as readonly string[];
 
-  const incoming = req.body as Partial<Record<Category, Record<string, unknown>>>;
+  const incoming = req.body as Record<string, unknown>;
 
-  // Validate: only known categories accepted
+  // Validate: only known keys accepted
   const unknownKeys = Object.keys(incoming).filter(
-    (k) => !ALLOWED_CATEGORIES.includes(k as Category)
+    (k) => !ALL_ALLOWED.includes(k)
   );
   if (unknownKeys.length > 0) {
     res.status(400).json({
@@ -153,9 +162,9 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
     profile = new HealthProfile({ userId });
   }
 
-  // Capture old flat values for change tracking
+  // Capture old flat values for change tracking (object categories only)
   const oldFlat = flattenObject(
-    ALLOWED_CATEGORIES.reduce<Record<string, unknown>>((acc, cat) => {
+    OBJECT_CATEGORIES.reduce<Record<string, unknown>>((acc, cat) => {
       const val = (profile as unknown as Record<string, unknown>)[cat];
       if (val && typeof val === 'object') {
         acc[cat] = (val as { toObject?: () => unknown }).toObject
@@ -171,9 +180,9 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
   // Apply partial updates using dot-notation $set to avoid overwriting sibling fields
   const setPayload: Record<string, unknown> = {};
 
-  for (const cat of ALLOWED_CATEGORIES) {
+  for (const cat of OBJECT_CATEGORIES) {
     if (!(cat in incoming)) continue;
-    const categoryData = incoming[cat];
+    const categoryData = incoming[cat] as Record<string, unknown>;
     if (typeof categoryData !== 'object' || categoryData === null || Array.isArray(categoryData)) {
       res.status(400).json({
         success: false,
@@ -185,6 +194,12 @@ router.put('/', authenticate, async (req: AuthRequest, res: Response): Promise<v
     for (const [field, value] of Object.entries(categoryData)) {
       setPayload[`${cat}.${field}`] = value;
     }
+  }
+
+  // Handle direct fields (arrays and strings) — set at top level, not dot-notation expanded
+  for (const field of DIRECT_FIELDS) {
+    if (!(field in incoming)) continue;
+    setPayload[field] = incoming[field];
   }
 
   // Build new flat snapshot for change detection
