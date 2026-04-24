@@ -150,9 +150,11 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
 
     // Fetch user's active cabinet items to cross-reference supplements
     let cabinetContext = '';
+    const cabinetNames: string[] = [];
     try {
       const cabinetItems = await CabinetItem.find({ userId, active: true }).lean();
       if (cabinetItems.length > 0) {
+        cabinetItems.forEach((item) => cabinetNames.push(item.name.toLowerCase()));
         const lines = cabinetItems.map((item) => {
           const parts = [item.name];
           if (item.brand) parts.push(`(${item.brand})`);
@@ -264,6 +266,16 @@ Input: "whey protein 1 scoop"
     const enrichedFoods = await Promise.all(
       (foods as FoodItem[]).map(async (item) => {
         if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
+
+        // Skip community DB / whole-foods override for supplements in user's Cabinet.
+        // The AI prompt already has accurate supplement reference data — community DB
+        // entries for supplements often have wrong per100g values (e.g. whey liquid vs powder).
+        const nameLC = item.name.toLowerCase();
+        const isCabinetSupplement = cabinetNames.some((cn) => nameLC.includes(cn) || cn.includes(nameLC));
+        if (isCabinetSupplement) {
+          console.log(`[enrich] "${item.name}" → SKIP (cabinet supplement, trusting AI estimate)`);
+          return { ...item, source: 'ai_estimated' };
+        }
 
         // 1. Community DB lookup (user-contributed HK food data)
         try {
