@@ -20,7 +20,7 @@ Create the branch **before** touching any files. Name it `feat/issue-NNN-...` or
 - **Database:** MongoDB (Mongoose ODM)
 - **AI:** Anthropic Claude API for health chat
 - **Auth:** JWT + bcrypt
-- **Deploy:** Railway
+- **Deploy:** fly.io (**NOT Railway** — fully migrated away from Railway)
 
 ## Architecture
 ```
@@ -31,6 +31,44 @@ src/
   middleware/      # Auth, validation, error handling
   utils/           # Helpers
 ```
+
+## Deployment (fly.io)
+
+**All deploys go through git → PR → merge. Never deploy manually from local.**
+
+The backend is hosted on fly.io. Deployments are triggered automatically on merge to `main` (via CI/CD) or can be triggered manually:
+
+```bash
+# One-time setup (if fly CLI not installed)
+brew install flyctl
+flyctl auth login
+
+# Deploy manually (only if CI is broken — prefer git merge flow)
+flyctl deploy --remote-only
+
+# View logs
+flyctl logs
+
+# SSH into running instance
+flyctl ssh console
+
+# Check app status
+flyctl status
+
+# Set/update environment variables
+flyctl secrets set KEY=value
+flyctl secrets list
+
+# App name (confirm with: flyctl apps list)
+# recallth-backend
+```
+
+**Environment variables** are managed via `flyctl secrets` — NOT in `.env` files or Railway dashboard.
+
+**Do NOT:**
+- Use `railway up` or Railway CLI — Railway is no longer used
+- Push directly to main — branch protection is enforced
+- Run `flyctl deploy` as a substitute for proper PR flow
 
 ## Key Commands
 ```bash
