@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { AuthRequest } from '../middleware/auth';
 import { ExerciseSession } from '../models/ExerciseSession';
+import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
 import { buildAiUsage } from '../utils/aiUsage';
 
@@ -380,6 +381,183 @@ Return ONLY valid JSON.`;
   } catch (err) {
     console.error('[POST /exercise/parse]', err);
     res.status(500).json({ success: false, data: null, error: 'AI exercise parsing failed' });
+  }
+});
+
+// ─── POST /exercise/ai-plan — AI generates tomorrow's workout ────────────────
+
+router.post('/ai-plan', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+
+    const fourteenDaysAgo = new Date();
+    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+    const historyDateStr = fourteenDaysAgo.toISOString().slice(0, 10);
+
+    const [recentSessions, profile] = await Promise.all([
+      ExerciseSession.find({ userId, date: { $gte: historyDateStr }, status: 'completed' })
+        .sort({ date: -1 })
+        .lean(),
+      HealthProfile.findOne({ userId }).lean(),
+    ]);
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().slice(0, 10);
+
+    const historyLines = recentSessions.map((s) => {
+      const parts = [`${s.date}: ${s.activityType}`];
+      if (s.durationMinutes) parts.push(`${s.durationMinutes} min`);
+      if (s.intensity) parts.push(`intensity: ${s.intensity}`);
+      if (s.distanceKm) parts.push(`${s.distanceKm}km`);
+      return parts.join(', ');
+    });
+
+    const goalParts: string[] = [];
+    if (profile?.exercise?.goals?.length) {
+      goalParts.push(`Exercise goals: ${profile.exercise.goals.join(', ')}`);
+    }
+    if (profile?.trainingGoals?.length) {
+      goalParts.push(`Training goals: ${profile.trainingGoals.map((g) => g.description).join(', ')}`);
+    }
+    if (profile?.exercise?.frequency) {
+      goalParts.push(`Workout frequency: ${profile.exercise.frequency}`);
+    }
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a personal fitness coach for a Hong Kong user. Based on their recent exercise history and fitness goals, generate a personalised workout plan for tomorrow (${tomorrowStr}).
+
+RECENT EXERCISE HISTORY (last 14 days):
+${historyLines.length > 0 ? historyLines.join('\n') : 'No recent sessions recorded.'}
+
+USER GOALS:
+${goalParts.length > 0 ? goalParts.join('\n') : 'No specific goals set.'}
+
+INSTRUCTIONS:
+- Recommend 1–3 exercise sessions for tomorrow
+- Consider recovery: avoid same muscle groups trained at high intensity today/yesterday
+- Balance variety with the user's existing habits
+- Keep it realistic — don't over-programme
+- Add a brief note in Cantonese (Traditional Chinese) explaining why this is recommended
+
+Return a JSON array. Each item has:
+- activityType: one of "gym", "running", "swimming", "basketball", "badminton", "cycling", "yoga", "hiking", "other"
+- durationMinutes: number (positive integer)
+- intensity: one of "easy", "moderate", "hard"
+- notes: string (brief Cantonese explanation, e.g. "上身恢復日，輕鬆做有氧")
+
+Example:
+[{"activityType":"running","durationMinutes":30,"intensity":"easy","notes":"輕鬆跑步幫助恢復"},{"activityType":"gym","durationMinutes":60,"intensity":"moderate","notes":"下肢訓練"}]
+
+Return ONLY valid JSON array. No markdown, no explanation.`;
+
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim();
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+
+    let sessions: unknown[];
+    try {
+      sessions = JSON.parse(cleaned) as unknown[];
+      if (!Array.isArray(sessions)) throw new Error('not an array');
+    } catch {
+      console.error('[POST /exercise/ai-plan] AI returned non-JSON:', raw);
+      res.status(500).json({ success: false, message: 'AI returned unexpected format' });
+      return;
+    }
+
+    const validActivityTypes = ['gym', 'running', 'swimming', 'basketball', 'badminton', 'cycling', 'yoga', 'hiking', 'other'];
+    const validIntensities = ['easy', 'moderate', 'hard'];
+
+    const sanitized = sessions
+      .filter((s): s is Record<string, unknown> => s !== null && typeof s === 'object')
+      .map((s) => ({
+        activityType: validActivityTypes.includes(s.activityType as string) ? (s.activityType as string) : 'gym',
+        durationMinutes: typeof s.durationMinutes === 'number' && (s.durationMinutes as number) > 0 ? (s.durationMinutes as number) : 60,
+        intensity: validIntensities.includes(s.intensity as string) ? (s.intensity as string) : 'moderate',
+        ...(typeof s.notes === 'string' && s.notes.trim().length > 0 ? { notes: (s.notes as string).trim() } : {}),
+      }));
+
+    if (sanitized.length === 0) {
+      res.status(500).json({ success: false, message: 'AI returned empty plan' });
+      return;
+    }
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=exercise-ai-plan`);
+
+    res.json({ success: true, data: { date: tomorrowStr, sessions: sanitized } });
+  } catch (err) {
+    console.error('[POST /exercise/ai-plan]', err);
+    res.status(500).json({ success: false, message: 'Failed to generate AI workout plan' });
+  }
+});
+
+// ─── POST /exercise/bulk — create multiple sessions at once ──────────────────
+
+router.post('/bulk', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { sessions } = req.body as { sessions?: unknown };
+
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+      res.status(400).json({ success: false, message: 'sessions must be a non-empty array' });
+      return;
+    }
+    if (sessions.length > 10) {
+      res.status(400).json({ success: false, message: 'Cannot bulk create more than 10 sessions at once' });
+      return;
+    }
+
+    const validActivityTypes = ['gym', 'running', 'swimming', 'basketball', 'badminton', 'cycling', 'yoga', 'hiking', 'other'];
+    const validIntensities = ['easy', 'moderate', 'hard'] as const;
+
+    const toCreate: Record<string, unknown>[] = [];
+
+    for (let i = 0; i < sessions.length; i++) {
+      const s = sessions[i] as Record<string, unknown>;
+
+      if (typeof s.activityType !== 'string' || !validActivityTypes.includes(s.activityType)) {
+        res.status(400).json({ success: false, message: `Session ${i}: invalid activityType` });
+        return;
+      }
+      if (typeof s.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s.date)) {
+        res.status(400).json({ success: false, message: `Session ${i}: date must be YYYY-MM-DD` });
+        return;
+      }
+      if (typeof s.durationMinutes !== 'number' || (s.durationMinutes as number) <= 0) {
+        res.status(400).json({ success: false, message: `Session ${i}: durationMinutes must be a positive number` });
+        return;
+      }
+      if (typeof s.intensity !== 'string' || !validIntensities.includes(s.intensity as typeof validIntensities[number])) {
+        res.status(400).json({ success: false, message: `Session ${i}: intensity must be easy/moderate/hard` });
+        return;
+      }
+
+      const doc: Record<string, unknown> = {
+        userId,
+        status: s.status === 'planned' ? 'planned' : 'completed',
+        activityType: s.activityType,
+        date: s.date,
+        durationMinutes: s.durationMinutes,
+        intensity: s.intensity,
+      };
+      if (typeof s.notes === 'string' && (s.notes as string).trim().length > 0) {
+        doc.notes = (s.notes as string).trim();
+      }
+      if (typeof s.activityLabel === 'string' && (s.activityLabel as string).trim().length > 0) {
+        doc.activityLabel = (s.activityLabel as string).trim();
+      }
+
+      toCreate.push(doc);
+    }
+
+    const created = await ExerciseSession.insertMany(toCreate);
+    res.status(201).json({ success: true, data: created });
+  } catch (err) {
+    console.error('[POST /exercise/bulk]', err);
+    res.status(500).json({ success: false, message: 'Failed to bulk create exercise sessions' });
   }
 });
 
