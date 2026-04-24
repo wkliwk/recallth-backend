@@ -126,6 +126,11 @@ function buildSystemPrompt(
         lifestyle: profile.lifestyle,
         goals: profile.goals,
         bloodwork: profile.bloodwork,
+        trainingGoals: profile.trainingGoals,
+        focusAreas: profile.focusAreas,
+        sportsBackground: profile.sportsBackground,
+        injuries: profile.injuries,
+        freeformNotes: profile.freeformNotes,
       }
     : null;
 
