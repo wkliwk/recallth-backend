@@ -109,6 +109,53 @@ function buildSideEffectContext(effects: ISideEffect[]): string {
   return `\nRECENT SIDE EFFECTS (last 30 days):\n${entries.join('\n')}`;
 }
 
+// --- Staleness detection ---
+function buildStalenessContext(profile: IHealthProfile | null): string {
+  if (!profile) return '';
+
+  const now = new Date();
+  const staleItems: string[] = [];
+
+  // Check active injuries with lastCheckedAt older than 30 days
+  if (profile.injuries && profile.injuries.length > 0) {
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    for (const injury of profile.injuries) {
+      if (injury.status !== 'resolved') {
+        const checkedAt = injury.lastCheckedAt ? new Date(injury.lastCheckedAt) : null;
+        if (!checkedAt || checkedAt < thirtyDaysAgo) {
+          const daysSince = checkedAt
+            ? Math.floor((now.getTime() - checkedAt.getTime()) / (24 * 60 * 60 * 1000))
+            : null;
+          const timeStr = daysSince ? `last checked ${daysSince} days ago` : 'never checked';
+          staleItems.push(`- Injury "${injury.name}" (${injury.status}) — ${timeStr}`);
+        }
+      }
+    }
+  }
+
+  // Check weight in changeHistory older than 14 days
+  if (profile.changeHistory && profile.changeHistory.length > 0) {
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const weightEntries = profile.changeHistory.filter((e) => e.field === 'body.weight');
+    if (weightEntries.length > 0) {
+      const latest = weightEntries[weightEntries.length - 1];
+      const latestDate = new Date(latest.timestamp);
+      if (latestDate < fourteenDaysAgo) {
+        const daysSince = Math.floor((now.getTime() - latestDate.getTime()) / (24 * 60 * 60 * 1000));
+        staleItems.push(`- Weight was last updated ${daysSince} days ago (current: ${String(latest.newValue)}kg)`);
+      }
+    } else if (profile.body?.weight) {
+      // Weight exists but no change history — consider it potentially stale
+      staleItems.push(`- Weight is on file but has no recent update history`);
+    }
+  }
+
+  if (staleItems.length === 0) return '';
+
+  return `\nSTALE DATA (consider asking about these when contextually relevant — do NOT force the topic):
+${staleItems.join('\n')}`;
+}
+
 // --- System prompt builder ---
 function buildSystemPrompt(
   profile: IHealthProfile | null,
@@ -146,6 +193,7 @@ function buildSystemPrompt(
   const languageInstruction = buildLanguageInstruction(language);
   const journalContext = buildJournalContext(journalLogs);
   const sideEffectContext = buildSideEffectContext(sideEffects);
+  const stalenessContext = buildStalenessContext(profile);
 
   // Time-of-day context for situational awareness
   const now = new Date();
@@ -163,7 +211,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
-${journalContext}${sideEffectContext}
+${journalContext}${sideEffectContext}${stalenessContext}
 
 ${languageInstruction}
 
@@ -253,6 +301,11 @@ Action types:
 - "add_cabinet": adds supplement to cabinet. data must have "name" and "type" ("supplement"|"medication"|"vitamin"), optionally "dosage", "frequency", "timing", "brand".
 - "add_exercise_set": adds an exercise entry to the current exercise session. Only use when a Session ID is present in the page context. data MUST have: "sessionId" (copy exactly from "Session ID:" in the page context), "exerciseName" (string), "sets" (number), "reps" (number). Optionally: "weightKg" (number). Example: if user says "幫我加多一個 Bench Press set 20下 80公斤", output {"type":"add_exercise_set","label":"加 Bench Press 1×20 @ 80kg","data":{"sessionId":"abc123","exerciseName":"Bench Press","sets":1,"reps":20,"weightKg":80}}
 - "plan_exercise": saves a planned workout session for a future date. Use when the user asks for a workout plan or asks what they should do tomorrow / next session. data MUST have: "activityType" (one of: gym, running, swimming, basketball, badminton, cycling, yoga, hiking, other), "date" (YYYY-MM-DD, the suggested date), "durationMinutes" (number), "intensity" (easy|moderate|hard). Optionally: "notes" (string, brief description). Label should say "加入計劃：[activity] [duration]分鐘" in the user's language. Example: {"type":"plan_exercise","label":"加入計劃：跑步 30 分鐘","data":{"activityType":"running","date":"2026-04-23","durationMinutes":30,"intensity":"easy","notes":"輕鬆恢復跑"}}
+- "save_injury": records a new injury or pain. Use when the user clearly states a current injury or pain (e.g. "my wrist hurts", "I pulled my hamstring"). Do NOT use for past/resolved injuries (e.g. "I used to have back pain"). data MUST have: "name" (short description, e.g. "left wrist pain"), "status" ("active"|"recovering"). Optionally: "location" (body part), "onsetDate" (YYYY-MM-DD if mentioned), "notes" (additional details). Example: {"type":"save_injury","label":"Record injury: left wrist pain","data":{"name":"left wrist pain","location":"left wrist","status":"active"}}
+- "update_injury": updates an existing injury's status. Use when the user says an injury has improved, worsened, or resolved (e.g. "wrist is better now", "knee pain is gone"). data MUST have: "name" (must match an existing injury name closely), "status" ("active"|"recovering"|"resolved"). Optionally: "notes" (update details). Example: {"type":"update_injury","label":"Mark wrist pain as resolved","data":{"name":"left wrist pain","status":"resolved"}}
+- "save_training_goal": records a specific training or fitness goal. Use when the user states a clear, measurable target (e.g. "I want to reach 70kg", "I want to bench 100kg"). data MUST have: "description" (goal description). Optionally: "targetMetric" (what is measured, e.g. "weight", "bench press 1RM"), "targetValue" (number), "targetUnit" (e.g. "kg", "minutes"). Example: {"type":"save_training_goal","label":"Save goal: reach 70kg body weight","data":{"description":"Reach 70kg body weight","targetMetric":"weight","targetValue":70,"targetUnit":"kg"}}
+- "save_sport": records a sport or physical activity the user practices. Use when the user mentions doing a sport regularly or starting one (e.g. "I do boxing", "I started swimming"). data MUST have: "sport" (sport name). Optionally: "experience" (level description), "status" ("active"|"learning"|"past"). Example: {"type":"save_sport","label":"Add sport: Boxing (learning)","data":{"sport":"Boxing","experience":"beginner","status":"learning"}}
+- "update_focus_areas": sets the user's physical focus areas. Use when the user mentions body parts or areas they want to improve (e.g. "my back is weak", "I need to work on my core"). data MUST have: "focusAreas" (array of strings, e.g. ["back", "core"]). This REPLACES the current focus areas list. Example: {"type":"update_focus_areas","label":"Update focus: back, core","data":{"focusAreas":["back","core"]}}
 
 Rules:
 - Only include actions for NEW data not already in the user's profile/cabinet above
@@ -506,7 +559,7 @@ async function generateTitleAndSummary(
 
 // --- Parse actions JSON block from AI response ---
 interface ChatAction {
-  type: 'save_profile' | 'add_cabinet' | 'add_exercise_set' | 'plan_exercise';
+  type: 'save_profile' | 'add_cabinet' | 'add_exercise_set' | 'plan_exercise' | 'save_injury' | 'update_injury' | 'save_training_goal' | 'save_sport' | 'update_focus_areas';
   label: string;
   data: Record<string, unknown>;
 }
