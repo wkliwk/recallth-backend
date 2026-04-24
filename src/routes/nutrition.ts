@@ -220,7 +220,21 @@ Input: "香蕉"
 {"foods":[{"name":"香蕉","quantity":1,"unit":"隻","grams":120,"estimated":true,"nutrients":{"calories":107,"protein":1.3,"carbs":27,"fat":0.4,"sugar":14,"fiber":3.1}}],"suggestions":[]}
 
 IMPORTANT — Macro accuracy for simple foods:
-For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro, fat will be very low (< 1g per 100g), and protein will be low (1–3g per 100g). Do NOT apply composite-dish macro patterns to simple whole foods.`;
+For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro, fat will be very low (< 1g per 100g), and protein will be low (1–3g per 100g). Do NOT apply composite-dish macro patterns to simple whole foods.
+
+IMPORTANT — Supplements and protein powders:
+When the input mentions supplements like whey protein, casein, creatine, BCAA, mass gainer, etc., use realistic per-serving nutritional values:
+- Whey protein isolate: 1 scoop (~30g) = ~120 kcal, ~25g protein, ~2g carbs, ~0.5g fat
+- Whey protein concentrate: 1 scoop (~33g) = ~130 kcal, ~24g protein, ~3g carbs, ~1.5g fat
+- Casein protein: 1 scoop (~33g) = ~120 kcal, ~24g protein, ~3g carbs, ~1g fat
+- Mass gainer: 1 scoop (~50g) = ~200 kcal, ~12g protein, ~32g carbs, ~3g fat
+- Creatine monohydrate: 1 scoop (~5g) = ~0 kcal, 0g protein, 0g carbs, 0g fat
+- BCAA: 1 scoop (~7g) = ~0 kcal, 0g protein, 0g carbs, 0g fat
+Do NOT confuse "whey protein" (the supplement powder) with "whey" (the dairy liquid). A scoop of whey protein powder has HIGH protein (~24g) and moderate calories (~120 kcal).
+
+Example for a supplement:
+Input: "whey protein 1 scoop"
+{"foods":[{"name":"Whey Protein","quantity":1,"unit":"scoop","grams":30,"estimated":true,"nutrients":{"calories":120,"protein":24,"carbs":3,"fat":1.5}}],"suggestions":[]}`;
 
     const result = await model.generateContent(prompt);
     const text2 = result.response.text().trim();
