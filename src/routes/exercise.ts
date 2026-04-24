@@ -441,15 +441,33 @@ INSTRUCTIONS:
 - Balance variety with the user's existing habits
 - Keep it realistic — don't over-programme
 - Add a brief note in Cantonese (Traditional Chinese) explaining why this is recommended
+- For gym sessions: always include an exercises array with 3–6 specific movements
 
 Return a JSON array. Each item has:
 - activityType: one of "gym", "running", "swimming", "basketball", "badminton", "cycling", "yoga", "hiking", "other"
 - durationMinutes: number (positive integer)
 - intensity: one of "easy", "moderate", "hard"
-- notes: string (brief Cantonese explanation, e.g. "上身恢復日，輕鬆做有氧")
+- notes: string (brief Cantonese explanation)
+- exercises: array (REQUIRED for gym; optional for other types). Each exercise:
+  - name: string (exercise name in English or Chinese)
+  - type: one of "strength", "bodyweight", "timed", "cardio", "session"
+  - sets: number (for strength/bodyweight/timed)
+  - reps: number (for strength/bodyweight)
+  - weightKg: number (for strength — suggest realistic starting weight)
+  - durationMin: number (for timed, in minutes; e.g. 30 sec = 0.5)
 
-Example:
-[{"activityType":"running","durationMinutes":30,"intensity":"easy","notes":"輕鬆跑步幫助恢復"},{"activityType":"gym","durationMinutes":60,"intensity":"moderate","notes":"下肢訓練"}]
+Exercise type rules:
+- Barbell/dumbbell/machine with weight → "strength"
+- Push-ups, pull-ups, dips, bodyweight squats → "bodyweight"
+- Plank, wall sit, dead hang → "timed"
+- Running on treadmill, rowing machine → "cardio"
+- Yoga, stretching session → "session"
+
+Example gym session:
+{"activityType":"gym","durationMinutes":60,"intensity":"moderate","notes":"上身推拉訓練","exercises":[{"name":"Bench Press","type":"strength","sets":3,"reps":10,"weightKg":60},{"name":"Pull-ups","type":"bodyweight","sets":3,"reps":8},{"name":"Shoulder Press","type":"strength","sets":3,"reps":12,"weightKg":40},{"name":"平板支撐","type":"timed","sets":3,"durationMin":0.5}]}
+
+Example running session:
+{"activityType":"running","durationMinutes":30,"intensity":"easy","notes":"輕鬆跑步幫助恢復"}
 
 Return ONLY valid JSON array. No markdown, no explanation.`;
 
@@ -469,15 +487,35 @@ Return ONLY valid JSON array. No markdown, no explanation.`;
 
     const validActivityTypes = ['gym', 'running', 'swimming', 'basketball', 'badminton', 'cycling', 'yoga', 'hiking', 'other'];
     const validIntensities = ['easy', 'moderate', 'hard'];
+    const validExTypes = ['strength', 'bodyweight', 'timed', 'cardio', 'session'];
 
     const sanitized = sessions
       .filter((s): s is Record<string, unknown> => s !== null && typeof s === 'object')
-      .map((s) => ({
-        activityType: validActivityTypes.includes(s.activityType as string) ? (s.activityType as string) : 'gym',
-        durationMinutes: typeof s.durationMinutes === 'number' && (s.durationMinutes as number) > 0 ? (s.durationMinutes as number) : 60,
-        intensity: validIntensities.includes(s.intensity as string) ? (s.intensity as string) : 'moderate',
-        ...(typeof s.notes === 'string' && s.notes.trim().length > 0 ? { notes: (s.notes as string).trim() } : {}),
-      }));
+      .map((s) => {
+        const base: Record<string, unknown> = {
+          activityType: validActivityTypes.includes(s.activityType as string) ? (s.activityType as string) : 'gym',
+          durationMinutes: typeof s.durationMinutes === 'number' && (s.durationMinutes as number) > 0 ? (s.durationMinutes as number) : 60,
+          intensity: validIntensities.includes(s.intensity as string) ? (s.intensity as string) : 'moderate',
+        };
+        if (typeof s.notes === 'string' && (s.notes as string).trim().length > 0) {
+          base.notes = (s.notes as string).trim();
+        }
+        if (Array.isArray(s.exercises) && s.exercises.length > 0) {
+          base.exercises = (s.exercises as Record<string, unknown>[])
+            .filter((ex) => typeof ex.name === 'string' && ex.name.trim().length > 0)
+            .map((ex) => {
+              const type = validExTypes.includes(ex.type as string) ? (ex.type as string) : 'strength';
+              const exOut: Record<string, unknown> = { name: (ex.name as string).trim(), type };
+              if (typeof ex.sets === 'number' && ex.sets > 0) exOut.sets = ex.sets;
+              if (typeof ex.reps === 'number' && ex.reps > 0) exOut.reps = ex.reps;
+              if (typeof ex.weightKg === 'number' && ex.weightKg > 0) exOut.weightKg = ex.weightKg;
+              if (typeof ex.durationMin === 'number' && ex.durationMin > 0) exOut.durationMin = ex.durationMin;
+              if (typeof ex.distanceKm === 'number' && ex.distanceKm > 0) exOut.distanceKm = ex.distanceKm;
+              return exOut;
+            });
+        }
+        return base;
+      });
 
     if (sanitized.length === 0) {
       res.status(500).json({ success: false, message: 'AI returned empty plan' });
@@ -548,6 +586,9 @@ router.post('/bulk', async (req: AuthRequest, res: Response): Promise<void> => {
       }
       if (typeof s.activityLabel === 'string' && (s.activityLabel as string).trim().length > 0) {
         doc.activityLabel = (s.activityLabel as string).trim();
+      }
+      if (Array.isArray(s.exercises) && s.exercises.length > 0) {
+        doc.exercises = s.exercises;
       }
 
       toCreate.push(doc);
