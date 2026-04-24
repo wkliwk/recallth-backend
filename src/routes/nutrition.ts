@@ -148,6 +148,24 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
       }
     }
 
+    // Fetch user's active cabinet items to cross-reference supplements
+    let cabinetContext = '';
+    try {
+      const cabinetItems = await CabinetItem.find({ userId, active: true }).lean();
+      if (cabinetItems.length > 0) {
+        const lines = cabinetItems.map((item) => {
+          const parts = [item.name];
+          if (item.brand) parts.push(`(${item.brand})`);
+          if (item.dosage) parts.push(`dosage: ${item.dosage}`);
+          if (item.ingredients) parts.push(`ingredients: ${item.ingredients}`);
+          return `  - ${parts.join(' ')}`;
+        });
+        cabinetContext = `\nThe user's supplement cabinet contains:\n${lines.join('\n')}\nIf the food description matches a cabinet item, use realistic nutritional values for that specific supplement product. For protein powders (whey, casein, etc.), a typical scoop (~30g) has ~120 kcal, ~24g protein, ~3g carbs, ~1.5g fat — adjust based on the brand/ingredients if known.\n`;
+      }
+    } catch {
+      // Cabinet lookup failed — continue without it
+    }
+
     const genAI = getGenAI();
     const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
 
@@ -155,7 +173,7 @@ router.post('/parse', async (req: AuthRequest, res: Response): Promise<void> => 
 The input may be in English, Cantonese, or Traditional Chinese (Hong Kong context). Recognise HK local food names and chain restaurants.
 
 Food description: "${aiText}"
-${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}
+${categoryContext.length > 0 ? `Nutrition category context: ${categoryContext}` : ''}${cabinetContext}
 
 IMPORTANT — Compound dish splitting:
 If the description mentions multiple DISTINCT food components (e.g., noodles + protein topping, rice + side dish, 烏冬 + 雞球), you MUST split them into SEPARATE items in "foods". Do NOT merge them into a single entry.
