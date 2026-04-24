@@ -647,6 +647,11 @@ export async function processChat(
       role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
       parts: [{ text: m.content }] as [{ text: string }],
     }));
+    // Gemini requires history[0].role === 'user' — drop any leading model entries
+    // (can happen when slice(-20) boundary falls on an assistant message in long conversations)
+    while (existingHistory.length > 0 && existingHistory[0].role === 'model') {
+      existingHistory.shift();
+    }
   }
 
   // Call Gemini BEFORE creating/saving any conversation record
