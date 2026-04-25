@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { adminAuth, AuthRequest } from '../middleware/auth';
 import { FoodItem, computeNutritionFlags } from '../models/FoodItem';
+import { MODELS } from '../config/models';
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -230,7 +231,7 @@ router.post('/food-db/:id/grab-image', async (req: AuthRequest, res: Response): 
 
     // Use Gemini with Google Search grounding to find relevant pages
     const model = getGenAI().getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: MODELS.CHAT,
       tools: [{ googleSearch: {} } as any],
     });
     const result = await model.generateContent(
