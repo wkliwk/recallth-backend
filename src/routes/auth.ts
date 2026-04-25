@@ -121,6 +121,7 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response): Promise
       email: user.email,
       hasPassword: !!user.passwordHash,
       googleLinked: !!user.googleId,
+      isAdmin: user.isAdmin ?? false,
     },
     error: null,
   });
