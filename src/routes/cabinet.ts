@@ -228,6 +228,13 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
 
   const items = await CabinetItem.find(query).sort({ createdAt: -1 }).lean();
 
+  // Re-wrap imageUrls through the current host's proxy.
+  // Stored URLs may be raw CDN URLs or old proxy URLs from a previous backend host
+  // (e.g. Railway). Extract the raw URL in either case and re-wrap with current host.
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host = req.get('host');
+  const currentBaseUrl = `${proto}://${host}`;
+
   const itemsWithComputed = items.map((item) => {
     const threshold = item.restockThresholdDays ?? 7;
     let daysSupplyRemaining: number | null = null;
@@ -236,7 +243,13 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
       daysSupplyRemaining = Math.floor(item.quantityRemaining / item.dailyDoseCount);
       lowSupplyWarning = daysSupplyRemaining <= threshold;
     }
-    return { ...item, daysSupplyRemaining, lowSupplyWarning };
+    let imageUrl = item.imageUrl as string | undefined;
+    if (imageUrl) {
+      const proxyMatch = imageUrl.match(/\/img\/image-proxy\?url=(.+)$/);
+      const rawImageUrl = proxyMatch ? decodeURIComponent(proxyMatch[1]) : imageUrl;
+      imageUrl = `${currentBaseUrl}/img/image-proxy?url=${encodeURIComponent(rawImageUrl)}`;
+    }
+    return { ...item, daysSupplyRemaining, lowSupplyWarning, imageUrl };
   });
 
   res.json({
