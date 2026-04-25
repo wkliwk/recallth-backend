@@ -676,4 +676,151 @@ ${exerciseLines.length > 0 ? '\n動作:\n' + exerciseLines.join('\n') : ''}
   }
 });
 
+// ─── POST /exercise/:id/suggest — next-session training suggestions ──────────
+
+router.post('/:id/suggest', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { id } = req.params;
+    const sessionId = Array.isArray(id) ? id[0] : id;
+    if (!Types.ObjectId.isValid(sessionId)) {
+      res.status(400).json({ success: false, message: 'Invalid session ID' });
+      return;
+    }
+
+    const session = await ExerciseSession.findOne({ _id: sessionId, userId }).lean();
+    if (!session) {
+      res.status(404).json({ success: false, message: 'Session not found' });
+      return;
+    }
+
+    const recentSessions = await ExerciseSession.find({ userId })
+      .sort({ date: -1 })
+      .limit(5)
+      .lean();
+
+    const intensityMap: Record<string, string> = { easy: '輕鬆', moderate: '中等', hard: '高強度' };
+    const activityMap: Record<string, string> = {
+      gym: '健身室', running: '跑步', swimming: '游泳', basketball: '籃球',
+      badminton: '羽毛球', cycling: '單車', yoga: '瑜伽', hiking: '行山', other: '其他',
+    };
+
+    const sessionSummary = [
+      `今日訓練: ${activityMap[session.activityType] ?? session.activityType}`,
+      `時間: ${session.durationMinutes ?? '?'} 分鐘`,
+      `強度: ${intensityMap[session.intensity ?? ''] ?? session.intensity ?? '未記錄'}`,
+      session.distanceKm ? `距離: ${session.distanceKm} km` : null,
+    ].filter(Boolean).join(', ');
+
+    const exerciseLines = (session.exercises ?? []).map((ex) => {
+      const parts = [`• ${ex.name}`];
+      if (ex.sets && ex.reps) parts.push(`${ex.sets}×${ex.reps}`);
+      if (ex.weightKg) parts.push(`@ ${ex.weightKg}kg`);
+      return parts.join(' ');
+    });
+
+    const recentLine = recentSessions.slice(1, 4).map(s =>
+      `${activityMap[s.activityType] ?? s.activityType} (${s.durationMinutes ?? '?'}min, ${intensityMap[s.intensity ?? ''] ?? s.intensity ?? '?'})`
+    ).join('; ');
+
+    const prompt = `你係一位香港健身教練。請用廣東話根據以下訓練資料，建議用戶聽日或下次訓練嘅計劃。
+
+今日訓練: ${sessionSummary}
+${exerciseLines.length > 0 ? '今日動作:\n' + exerciseLines.join('\n') : ''}
+最近記錄: ${recentLine || '暫無'}
+
+請提供以下內容（廣東話，簡潔實用）：
+1. 建議明日/下次訓練類型同強度（1句）
+2. 具體建議動作或活動（2-3點）
+3. 恢復或注意事項（1句）
+
+格式要求：
+- 直接回答，唔好打開場白
+- 語氣專業但友善
+- 總長度控制在150字以內`;
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const suggestion = result.response.text().trim();
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=exercise-suggest`);
+
+    res.json({ success: true, suggestion });
+  } catch (err) {
+    console.error('[POST /exercise/:id/suggest]', err);
+    res.status(500).json({ success: false, message: 'Suggestion failed' });
+  }
+});
+
+// ─── POST /exercise/:id/progress — recent progress summary ───────────────────
+
+router.post('/:id/progress', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { id } = req.params;
+    const sessionId = Array.isArray(id) ? id[0] : id;
+    if (!Types.ObjectId.isValid(sessionId)) {
+      res.status(400).json({ success: false, message: 'Invalid session ID' });
+      return;
+    }
+
+    const session = await ExerciseSession.findOne({ _id: sessionId, userId }).lean();
+    if (!session) {
+      res.status(404).json({ success: false, message: 'Session not found' });
+      return;
+    }
+
+    const recentSessions = await ExerciseSession.find({ userId })
+      .sort({ date: -1 })
+      .limit(10)
+      .lean();
+
+    const activityMap: Record<string, string> = {
+      gym: '健身室', running: '跑步', swimming: '游泳', basketball: '籃球',
+      badminton: '羽毛球', cycling: '單車', yoga: '瑜伽', hiking: '行山', other: '其他',
+    };
+    const intensityMap: Record<string, string> = { easy: '輕鬆', moderate: '中等', hard: '高強度' };
+
+    const sessionLines = recentSessions.map((s, i) => {
+      const parts = [`${i + 1}. ${s.date} — ${activityMap[s.activityType] ?? s.activityType}`];
+      parts.push(`${s.durationMinutes ?? '?'}min`);
+      parts.push(intensityMap[s.intensity ?? ''] ?? (s.intensity ?? '?'));
+      if (s.distanceKm) parts.push(`${s.distanceKm}km`);
+      const maxWeight = (s.exercises ?? []).reduce((max, ex) => Math.max(max, ex.weightKg ?? 0), 0);
+      if (maxWeight > 0) parts.push(`最高重量: ${maxWeight}kg`);
+      return parts.join(', ');
+    });
+
+    const prompt = `你係一位香港健身教練。請用廣東話根據以下近期訓練記錄，分析用戶嘅進度同趨勢。
+
+近期訓練記錄（最新優先）:
+${sessionLines.join('\n')}
+
+請提供以下內容（廣東話，簡潔實用）：
+1. 整體訓練規律評估（1-2句）
+2. 明顯進步或需關注嘅地方（1-2點）
+3. 下階段建議方向（1句）
+
+格式要求：
+- 直接回答，唔好打開場白
+- 語氣專業但友善
+- 總長度控制在150字以內`;
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const progress = result.response.text().trim();
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=exercise-progress`);
+
+    res.json({ success: true, progress });
+  } catch (err) {
+    console.error('[POST /exercise/:id/progress]', err);
+    res.status(500).json({ success: false, message: 'Progress summary failed' });
+  }
+});
+
 export default router;
