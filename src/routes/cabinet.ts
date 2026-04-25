@@ -11,6 +11,7 @@ import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
 import { InsightCache } from '../models/InsightCache';
 import { buildAiUsage } from '../utils/aiUsage';
+import { getCached, setCached } from '../models/AiCache';
 
 async function resolveScopedUserId(
   ownerId: Types.ObjectId,
@@ -39,11 +40,11 @@ interface EvidenceScore {
   rationale: string;
 }
 
-const evidenceCache = new Map<string, { scores: EvidenceScore[]; expiresAt: number }>();
-const EVIDENCE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const EVIDENCE_CACHE_TYPE = 'evidence_scores';
 
-function bustEvidenceCache(userId: string) {
-  evidenceCache.delete(userId);
+async function bustEvidenceCache(userId: string) {
+  const { deleteCached } = await import('../models/AiCache');
+  await deleteCached(EVIDENCE_CACHE_TYPE, userId);
 }
 
 // ─── Redundancy cache (in-memory, 1-hour TTL per user) ───────────────────────
@@ -1521,10 +1522,10 @@ This is general health information, not personalised medical advice.`;
 router.get('/evidence-scores', async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId as string;
 
-  // Return cached result if fresh
-  const cached = evidenceCache.get(userId);
-  if (cached && Date.now() < cached.expiresAt) {
-    res.json({ success: true, data: { scores: cached.scores }, error: null });
+  // Check MongoDB cache
+  const cached = await getCached<EvidenceScore[]>(EVIDENCE_CACHE_TYPE, userId);
+  if (cached) {
+    res.json({ success: true, data: { scores: cached }, error: null });
     return;
   }
 
@@ -1560,7 +1561,6 @@ If you don't recognise an item, assign D and say so in the rationale.`;
     let parsed: EvidenceScore[];
     try {
       parsed = JSON.parse(cleaned) as EvidenceScore[];
-      // Validate and normalise
       parsed = parsed
         .filter((s) => s.name && ['A', 'B', 'C', 'D'].includes(s.level))
         .map((s) => ({ name: s.name, level: s.level, rationale: s.rationale ?? '' }));
@@ -1569,7 +1569,7 @@ If you don't recognise an item, assign D and say so in the rationale.`;
       return;
     }
 
-    evidenceCache.set(userId, { scores: parsed, expiresAt: Date.now() + EVIDENCE_TTL_MS });
+    await setCached(EVIDENCE_CACHE_TYPE, userId, parsed);
     res.json({ success: true, data: { scores: parsed }, error: null });
   } catch (err) {
     console.error('[GET /cabinet/evidence-scores]', err);

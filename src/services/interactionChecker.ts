@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { ICabinetItem } from '../models/CabinetItem';
 import { MODELS } from '../config/models';
+import { getCached, setCached, deleteCached } from '../models/AiCache';
 
 export interface Interaction {
   item1: string;
@@ -24,14 +25,7 @@ interface GeminiInteractionResponse {
 
 const VALID_SEVERITIES = new Set<string>(['minor', 'moderate', 'major']);
 
-// --- In-memory cache for interaction results ---
-interface CacheEntry {
-  result: Interaction[];
-  expiresAt: number;
-}
-
-const interactionCache = new Map<string, CacheEntry>();
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CACHE_TYPE = 'interactions';
 
 function getCacheKey(itemNames: string[]): string {
   return itemNames.sort().join('|').toLowerCase();
@@ -41,13 +35,8 @@ function getCacheKey(itemNames: string[]): string {
  * Invalidate cache entries that contain the given item name.
  * Call this whenever a cabinet item is added, updated, or removed.
  */
-export function invalidateInteractionCache(itemName: string): void {
-  const normalised = itemName.toLowerCase();
-  for (const key of interactionCache.keys()) {
-    if (key.split('|').includes(normalised)) {
-      interactionCache.delete(key);
-    }
-  }
+export async function invalidateInteractionCache(itemName: string): Promise<void> {
+  await deleteCached(CACHE_TYPE, itemName.toLowerCase());
 }
 
 function buildItemList(items: ICabinetItem[]): string {
@@ -136,13 +125,13 @@ async function runInteractionCheck(items: ICabinetItem[], prompt: string): Promi
     throw new Error('GOOGLE_GEMINI_API_KEY is not set');
   }
 
-  // Check cache before making API call
   const cacheKey = getCacheKey(items.map((i) => i.name));
-  const now = Date.now();
-  const cached = interactionCache.get(cacheKey);
-  if (cached && now < cached.expiresAt) {
+
+  // Check MongoDB cache
+  const cached = await getCached<Interaction[]>(CACHE_TYPE, cacheKey);
+  if (cached) {
     console.log(`[AI] model=${MODELS.INTERACTION} task=interaction cache_hit=true key="${cacheKey}"`);
-    return cached.result;
+    return cached;
   }
 
   const client = new GoogleGenerativeAI(apiKey);
@@ -158,8 +147,8 @@ async function runInteractionCheck(items: ICabinetItem[], prompt: string): Promi
 
   const result = parseGeminiResponse(text);
 
-  // Store in cache with TTL
-  interactionCache.set(cacheKey, { result, expiresAt: now + CACHE_TTL_MS });
+  // Persist to MongoDB (TTL handled by index)
+  await setCached(CACHE_TYPE, cacheKey, result);
 
   return result;
 }
