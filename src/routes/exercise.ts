@@ -602,4 +602,78 @@ router.post('/bulk', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 });
 
+// ─── POST /exercise/:id/analyze — inline AI analysis of a session ─────────────
+
+router.post('/:id/analyze', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId as string;
+    const { id } = req.params;
+    const sessionId = Array.isArray(id) ? id[0] : id;
+    if (!Types.ObjectId.isValid(sessionId)) {
+      res.status(400).json({ success: false, message: 'Invalid session ID' });
+      return;
+    }
+
+    const session = await ExerciseSession.findOne({ _id: sessionId, userId }).lean();
+    if (!session) {
+      res.status(404).json({ success: false, message: 'Session not found' });
+      return;
+    }
+
+    // Build session summary for the prompt
+    const intensityMap: Record<string, string> = { easy: '輕鬆', moderate: '中等', hard: '高強度' };
+    const activityMap: Record<string, string> = {
+      gym: '健身室', running: '跑步', swimming: '游泳', basketball: '籃球',
+      badminton: '羽毛球', cycling: '單車', yoga: '瑜伽', hiking: '行山', other: '其他',
+    };
+
+    const sessionSummary = [
+      `日期: ${session.date}`,
+      `運動類型: ${activityMap[session.activityType] ?? session.activityType}`,
+      `時間: ${session.durationMinutes ?? '?'} 分鐘`,
+      `強度: ${intensityMap[session.intensity ?? ''] ?? session.intensity ?? '未記錄'}`,
+      session.distanceKm ? `距離: ${session.distanceKm} km` : null,
+      session.notes ? `備註: ${session.notes}` : null,
+    ].filter(Boolean).join('\n');
+
+    const exerciseLines = (session.exercises ?? []).map((ex) => {
+      const parts = [`• ${ex.name} (${ex.type})`];
+      if (ex.sets && ex.reps) parts.push(`${ex.sets} × ${ex.reps} reps`);
+      if (ex.weightKg) parts.push(`@ ${ex.weightKg}kg`);
+      if (ex.durationMin) parts.push(`${ex.durationMin} min`);
+      return parts.join(' ');
+    });
+
+    const prompt = `你係一位香港健身教練。請用廣東話分析以下運動訓練，提供簡短、實用嘅意見。
+
+訓練資料:
+${sessionSummary}
+${exerciseLines.length > 0 ? '\n動作:\n' + exerciseLines.join('\n') : ''}
+
+請提供以下內容（用廣東話，保持簡潔）：
+1. 整體表現評估（1-2句）
+2. 重點動作觀察（如有具體動作數據，逐一點評；否則根據整體訓練評估）
+3. 下次訓練建議（1-2點）
+
+格式要求：
+- 直接回答，唔好打「好嘅，我分析緊...」等開場白
+- 每個部分用換行分隔
+- 語氣專業但友善
+- 總長度控制在150字以內`;
+
+    const genAI = getGenAI();
+    const model = genAI.getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+    const analysis = result.response.text().trim();
+
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=exercise-analyze`);
+
+    res.json({ success: true, analysis });
+  } catch (err) {
+    console.error('[POST /exercise/:id/analyze]', err);
+    res.status(500).json({ success: false, message: 'Analysis failed' });
+  }
+});
+
 export default router;
