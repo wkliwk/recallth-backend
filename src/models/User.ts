@@ -5,6 +5,7 @@ export interface IUser extends Document {
   passwordHash?: string;
   googleId?: string;
   displayName?: string;
+  isAdmin: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,6 +28,10 @@ const UserSchema = new Schema<IUser>(
     },
     displayName: {
       type: String,
+    },
+    isAdmin: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }
