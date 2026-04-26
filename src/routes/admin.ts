@@ -212,6 +212,27 @@ router.delete('/food-db/:id', async (req: AuthRequest, res: Response): Promise<v
   }
 });
 
+// ─── DELETE /admin/food-db/:id/hard — permanent delete ───────────────────────
+
+router.delete('/food-db/:id/hard', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id as string;
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(400).json({ success: false, error: 'Invalid ID' });
+      return;
+    }
+    const deleted = await FoodItem.findByIdAndDelete(id).lean();
+    if (!deleted) {
+      res.status(404).json({ success: false, error: 'Not found' });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[DELETE /admin/food-db/:id/hard]', err);
+    res.status(500).json({ success: false, error: 'Failed to delete' });
+  }
+});
+
 // ─── POST /admin/food-db/:id/grab-image — auto-fetch dish image ──────────────
 
 router.post('/food-db/:id/grab-image', async (req: AuthRequest, res: Response): Promise<void> => {
