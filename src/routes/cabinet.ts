@@ -661,6 +661,145 @@ Rules:
   }
 });
 
+// POST /cabinet/url-lookup — identify product from a pasted URL
+router.post('/url-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { url } = req.body as { url?: string };
+
+  if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url.trim())) {
+    res.status(400).json({ success: false, data: null, error: 'A valid http/https URL is required' });
+    return;
+  }
+
+  try {
+    // Fetch the page HTML
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let html = '';
+    try {
+      const pageRes = await fetch(url.trim(), {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'follow',
+      });
+      clearTimeout(timer);
+      if (!pageRes.ok) {
+        res.status(422).json({ success: false, data: null, error: `Could not fetch URL (${pageRes.status})` });
+        return;
+      }
+      html = await pageRes.text();
+    } catch {
+      clearTimeout(timer);
+      res.status(422).json({ success: false, data: null, error: 'Could not reach URL' });
+      return;
+    }
+
+    // Extract structured signals from the HTML
+    const getMetaContent = (pattern: RegExp) => html.match(pattern)?.[1]?.trim() ?? '';
+    const ogTitle       = getMetaContent(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+                       || getMetaContent(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+    const ogDesc        = getMetaContent(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)
+                       || getMetaContent(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i);
+    const ogImage       = getMetaContent(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+                       || getMetaContent(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    const metaDesc      = getMetaContent(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+    const pageTitle     = getMetaContent(/<title[^>]*>([^<]+)<\/title>/i);
+
+    // Extract JSON-LD Product schema if present
+    const ldMatch = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) ?? [];
+    let ldProduct = '';
+    for (const block of ldMatch) {
+      const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '').trim();
+      if (inner.includes('"Product"') || inner.includes('"product"')) {
+        ldProduct = inner.slice(0, 2000);
+        break;
+      }
+    }
+
+    // Strip tags and get first 2000 chars of visible text
+    const visibleText = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .slice(0, 2000);
+
+    const pageSignals = [
+      ogTitle      && `Title: ${ogTitle}`,
+      ogDesc       && `OG Description: ${ogDesc}`,
+      metaDesc     && `Meta Description: ${metaDesc}`,
+      pageTitle    && `Page Title: ${pageTitle}`,
+      ldProduct    && `JSON-LD: ${ldProduct}`,
+      `Visible text excerpt: ${visibleText}`,
+    ].filter(Boolean).join('\n');
+
+    const prompt = `You are a supplement and medication product expert. Identify the product from this web page content and return structured data.
+
+URL: ${url.trim()}
+
+Page content:
+${pageSignals}
+
+Return ONLY a valid JSON object (no markdown fences):
+{
+  "name": string,            // product name in English
+  "nameZh": string | null,   // name in Traditional Chinese if known
+  "brand": string | null,
+  "type": "supplement" | "medication" | "vitamin",
+  "dosage": string | null,   // recommended serving size
+  "frequency": string | null,
+  "timing": string | null,
+  "description": string,     // 1-2 sentence description
+  "ingredients": string,     // key active ingredients, comma-separated
+  "notes": string | null,
+  "imageUrl": string | null  // set to null, image resolved separately
+}
+
+Rules:
+- Extract exact product name from the page, not a generic name
+- If you cannot identify a specific supplement or medication product, return { "error": "Not a product page" }`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const usage = result.response.usageMetadata;
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let product: Record<string, unknown>;
+    try {
+      product = JSON.parse(cleaned);
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not parse product info' });
+      return;
+    }
+
+    if (product.error) {
+      res.status(422).json({ success: false, data: null, error: product.error as string });
+      return;
+    }
+
+    // Use og:image as imageUrl if present; wrap through proxy
+    if (ogImage) {
+      let imgUrl = ogImage.startsWith('//') ? `https:${ogImage}` : ogImage;
+      imgUrl = imgUrl.replace(/^http:\/\//, 'https://');
+      const proto = req.get('x-forwarded-proto') || req.protocol;
+      const host = req.get('host');
+      product.imageUrl = `${proto}://${host}/img/image-proxy?url=${encodeURIComponent(imgUrl)}`;
+    }
+
+    res.json({ success: true, error: null, data: product, aiUsage });
+  } catch (err) {
+    console.error('[POST /cabinet/url-lookup]', err);
+    res.status(500).json({ success: false, data: null, error: 'URL lookup failed' });
+  }
+});
+
 // POST /cabinet/scan — OCR a supplement bottle label via Gemini Vision
 router.post('/scan', async (req: AuthRequest, res: Response): Promise<void> => {
   const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
