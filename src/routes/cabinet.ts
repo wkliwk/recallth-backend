@@ -226,6 +226,11 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
     }
   }
 
+  if (req.query.search) {
+    const regex = new RegExp(req.query.search as string, 'i');
+    query['$or'] = [{ name: regex }, { brand: regex }, { type: regex }];
+  }
+
   const items = await CabinetItem.find(query).sort({ createdAt: -1 }).lean();
 
   // Re-wrap imageUrls through the current host's proxy.
