@@ -344,22 +344,60 @@ Rules:
 - If you cannot find reliable nutrition data, return { "error": "No nutrition data found" }
 - Choose source based on URL domain: openfoodfacts.org → "openfoodfacts", official brand/govt → "official", else → "ai_estimated"`;
 
+    const parseJson = (raw: string): Record<string, unknown> | null => {
+      const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      try { return JSON.parse(cleaned); } catch { return null; }
+    };
+
+    // Attempt 1: raw HTML context
     const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
     const result = await model.generateContent(prompt);
+    let data = parseJson(result.response.text());
 
-    const text = result.response.text().trim();
-    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    // Attempt 2: Google Search grounding (fallback for JS-rendered pages)
+    if (!data || data.error) {
+      const productHint = ogTitle || pageTitle || url.trim();
+      const groundingPrompt = `Find the complete nutrition facts for this food product and return them as structured JSON.
 
-    let data: Record<string, unknown>;
-    try {
-      data = JSON.parse(cleaned);
-    } catch {
-      res.status(422).json({ success: false, error: 'Could not parse food data' });
-      return;
+Product URL: ${url.trim()}
+Product name hint: ${productHint}
+
+Search for the official nutrition information (per 100g or per 100ml). Convert any per-serving values to per-100g.
+
+Return ONLY a valid JSON object (no markdown fences):
+{
+  "name": string,
+  "displayName": string,
+  "brand": string | null,
+  "category": one of ${JSON.stringify(CATEGORIES)},
+  "per100g": {
+    "calories": number,
+    "protein": number,
+    "carbs": number,
+    "fat": number,
+    "sugar": number | null,
+    "fiber": number | null,
+    "sodium": number | null
+  },
+  "defaultServingGrams": number,
+  "defaultServingUnit": string,
+  "source": "official" | "openfoodfacts" | "community" | "reference" | "ai_estimated",
+  "dataSourceUrl": string | null,
+  "notes": string | null
+}
+
+If you cannot find reliable nutrition data, return { "error": "No nutrition data found" }`;
+
+      const groundingModel = getGenAI().getGenerativeModel({
+        model: MODELS.CHAT,
+        tools: [{ googleSearch: {} } as any],
+      });
+      const groundingResult = await groundingModel.generateContent(groundingPrompt);
+      data = parseJson(groundingResult.response.text()) ?? { error: 'No nutrition data found' };
     }
 
-    if (data.error) {
-      res.status(422).json({ success: false, error: data.error as string });
+    if (!data || data.error) {
+      res.status(422).json({ success: false, error: (data?.error as string) ?? 'No nutrition data found' });
       return;
     }
 
