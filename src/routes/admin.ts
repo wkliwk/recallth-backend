@@ -233,6 +233,150 @@ router.delete('/food-db/:id/hard', async (req: AuthRequest, res: Response): Prom
   }
 });
 
+// ─── POST /admin/food-db/url-lookup — populate food item from URL ────────────
+
+router.post('/food-db/url-lookup', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { url } = req.body as { url?: string };
+
+  if (!url || typeof url !== 'string' || !/^https?:\/\/.+/.test(url.trim())) {
+    res.status(400).json({ success: false, error: 'A valid http/https URL is required' });
+    return;
+  }
+
+  try {
+    // Fetch page HTML
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    let html = '';
+    try {
+      const pageRes = await fetch(url.trim(), {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9,zh;q=0.8',
+        },
+        redirect: 'follow',
+      });
+      clearTimeout(timer);
+      if (!pageRes.ok) {
+        res.status(422).json({ success: false, error: `Could not fetch URL (${pageRes.status})` });
+        return;
+      }
+      html = await pageRes.text();
+    } catch {
+      clearTimeout(timer);
+      res.status(422).json({ success: false, error: 'Could not reach URL' });
+      return;
+    }
+
+    // Extract signals
+    const getMeta = (pattern: RegExp) => html.match(pattern)?.[1]?.trim() ?? '';
+    const ogTitle   = getMeta(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+                   || getMeta(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+    const ogDesc    = getMeta(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)
+                   || getMeta(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/i);
+    const ogImage   = getMeta(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
+                   || getMeta(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    const metaDesc  = getMeta(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+    const pageTitle = getMeta(/<title[^>]*>([^<]+)<\/title>/i);
+
+    // JSON-LD blocks (NutritionInformation or Product)
+    const ldBlocks = html.match(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) ?? [];
+    let ldData = '';
+    for (const block of ldBlocks) {
+      const inner = block.replace(/<script[^>]*>/, '').replace(/<\/script>/, '').trim();
+      if (inner.includes('Nutrition') || inner.includes('Product') || inner.includes('nutrition')) {
+        ldData = inner.slice(0, 3000);
+        break;
+      }
+    }
+
+    const visibleText = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .slice(0, 3000);
+
+    const pageSignals = [
+      ogTitle    && `og:title: ${ogTitle}`,
+      ogDesc     && `og:description: ${ogDesc}`,
+      metaDesc   && `meta description: ${metaDesc}`,
+      pageTitle  && `page title: ${pageTitle}`,
+      ldData     && `JSON-LD: ${ldData}`,
+      `Visible text: ${visibleText}`,
+    ].filter(Boolean).join('\n');
+
+    const CATEGORIES = ['rice_noodles','protein','dim_sum','soup','bread_pastry','drinks','desserts','snacks','fast_food','whole_food','packaged'];
+
+    const prompt = `You are a food nutritionist and database expert. Extract food item data from this web page.
+
+URL: ${url.trim()}
+
+Page content:
+${pageSignals}
+
+Return ONLY a valid JSON object (no markdown fences):
+{
+  "name": string,               // internal name (lowercase English, e.g. "oat milk")
+  "displayName": string,        // display name (proper case, may include Chinese, e.g. "Oat Milk 燕麥奶")
+  "brand": string | null,
+  "category": one of ${JSON.stringify(CATEGORIES)},
+  "per100g": {
+    "calories": number,         // kcal per 100g
+    "protein": number,          // g per 100g
+    "carbs": number,            // g per 100g
+    "fat": number,              // g per 100g
+    "sugar": number | null,
+    "fiber": number | null,
+    "sodium": number | null     // mg per 100g
+  },
+  "defaultServingGrams": number,   // typical single serving in grams
+  "defaultServingUnit": string,    // e.g. "g", "ml", "piece", "cup"
+  "source": "official" | "openfoodfacts" | "community" | "reference" | "ai_estimated",
+  "dataSourceUrl": string | null,  // the source URL if it's a reputable nutrition source
+  "notes": string | null
+}
+
+Rules:
+- All nutrition values must be PER 100g (convert if the page shows per-serving values)
+- If you cannot find reliable nutrition data, return { "error": "No nutrition data found" }
+- Choose source based on URL domain: openfoodfacts.org → "openfoodfacts", official brand/govt → "official", else → "ai_estimated"`;
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+    const result = await model.generateContent(prompt);
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(cleaned);
+    } catch {
+      res.status(422).json({ success: false, error: 'Could not parse food data' });
+      return;
+    }
+
+    if (data.error) {
+      res.status(422).json({ success: false, error: data.error as string });
+      return;
+    }
+
+    // Attach og:image if found
+    if (ogImage && !data.dishImageUrl) {
+      let imgUrl = ogImage.startsWith('//') ? `https:${ogImage}` : ogImage;
+      imgUrl = imgUrl.replace(/^http:\/\//, 'https://');
+      data.dishImageUrl = imgUrl;
+    }
+
+    res.json({ success: true, data });
+  } catch (err) {
+    console.error('[POST /admin/food-db/url-lookup]', err);
+    res.status(500).json({ success: false, error: 'URL lookup failed' });
+  }
+});
+
 // ─── POST /admin/food-db/:id/grab-image — auto-fetch dish image ──────────────
 
 router.post('/food-db/:id/grab-image', async (req: AuthRequest, res: Response): Promise<void> => {
