@@ -29,6 +29,7 @@ import nutritionRouter from './routes/nutrition';
 import exerciseRouter from './routes/exercise';
 import adminRouter from './routes/admin';
 import { authenticate } from './middleware/auth';
+import { startReminderJob } from './services/reminderJob';
 
 dotenv.config();
 
@@ -72,6 +73,7 @@ app.use(errorHandler);
 
 const start = async () => {
   await connectDB();
+  startReminderJob();
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Recallth API running on port ${PORT}`);
   });
