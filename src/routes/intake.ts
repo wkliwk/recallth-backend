@@ -71,6 +71,18 @@ router.post('/log', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /intake/status — check if user has logged today
+router.get('/status', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const today = todayUTC();
+    const log = await IntakeLog.findOne({ userId: req.userId, date: today }).lean();
+    res.json({ logged: !!log, loggedAt: log ? log.createdAt : null });
+  } catch (error) {
+    console.error('Intake status GET error:', error);
+    res.status(500).json({ error: 'Failed to retrieve intake status' });
+  }
+});
+
 // GET /intake/streak — return streak data
 router.get('/streak', authenticate, async (req: AuthRequest, res: Response) => {
   try {
