@@ -6,6 +6,7 @@ import { ExtractionReview } from '../models/ExtractionReview';
 import { Conversation } from '../models/Conversation';
 import { DailyLog, IDailyLog } from '../models/DailyLog';
 import { SideEffect, ISideEffect } from '../models/SideEffect';
+import { ExerciseSession, IExerciseSession } from '../models/ExerciseSession';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 import { buildAiUsage, AiUsage } from '../utils/aiUsage';
@@ -109,6 +110,27 @@ function buildSideEffectContext(effects: ISideEffect[]): string {
   return `\nRECENT SIDE EFFECTS (last 30 days):\n${entries.join('\n')}`;
 }
 
+function buildExerciseContext(sessions: IExerciseSession[]): string {
+  if (sessions.length === 0) return '';
+  const entries = sessions.map((s) => {
+    const durationStr = s.durationMinutes ? ` ${s.durationMinutes}min` : '';
+    let setsReps = '';
+    if (s.exercises && s.exercises.length > 0) {
+      const summary = s.exercises
+        .slice(0, 4)
+        .map((e) => {
+          if (e.sets && e.reps) return `${e.name} ${e.sets}×${e.reps}${e.weightKg ? `@${e.weightKg}kg` : ''}`;
+          if (e.durationMin) return `${e.name} ${e.durationMin}min`;
+          return e.name;
+        })
+        .join(', ');
+      setsReps = ` [${summary}${s.exercises.length > 4 ? ', ...' : ''}]`;
+    }
+    return `  ${s.date}: ${s.activityType}${durationStr} (${s.intensity})${setsReps}`;
+  });
+  return `\nRECENT EXERCISE (last 14 days):\n${entries.join('\n')}`;
+}
+
 // --- Staleness detection ---
 function buildStalenessContext(profile: IHealthProfile | null): string {
   if (!profile) return '';
@@ -162,7 +184,8 @@ function buildSystemPrompt(
   cabinetItems: ICabinetItem[],
   language: DetectedLanguage,
   journalLogs: IDailyLog[],
-  sideEffects: ISideEffect[]
+  sideEffects: ISideEffect[],
+  exerciseSessions: IExerciseSession[]
 ): string {
   const profileData = profile
     ? {
@@ -193,6 +216,7 @@ function buildSystemPrompt(
   const languageInstruction = buildLanguageInstruction(language);
   const journalContext = buildJournalContext(journalLogs);
   const sideEffectContext = buildSideEffectContext(sideEffects);
+  const exerciseContext = buildExerciseContext(exerciseSessions);
   const stalenessContext = buildStalenessContext(profile);
 
   // Time-of-day context for situational awareness
@@ -211,7 +235,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
-${journalContext}${sideEffectContext}${stalenessContext}
+${journalContext}${sideEffectContext}${exerciseContext}${stalenessContext}
 
 ${languageInstruction}
 
@@ -672,18 +696,22 @@ export async function processChat(
   // Use UI language override if provided, otherwise detect from message
   const language = languageOverride ?? detectLanguage(userMessage);
 
-  // Load profile, cabinet, journal, and side effects in parallel
+  // Load profile, cabinet, journal, side effects, and exercise sessions in parallel
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
   const sevenDaysAgoISO = sevenDaysAgo.toISOString().slice(0, 10);
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  const fourteenDaysAgoISO = fourteenDaysAgo.toISOString().slice(0, 10);
 
-  const [profile, cabinetItems, journalLogs, sideEffects] = await Promise.all([
+  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions] = await Promise.all([
     HealthProfile.findOne({ userId: userObjectId }),
     CabinetItem.find({ userId: userObjectId, active: true }),
     DailyLog.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(7),
     SideEffect.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: -1 }).limit(10),
+    ExerciseSession.find({ userId: userObjectId, date: { $gte: fourteenDaysAgoISO }, status: 'completed' }).sort({ date: -1 }).limit(20),
   ]);
 
   // For existing conversations, load them now; for new ones, defer creation until after AI succeeds
@@ -714,7 +742,7 @@ export async function processChat(
 
   // Call Gemini BEFORE creating/saving any conversation record
   // This prevents ghost conversations when the AI call fails
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions);
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
