@@ -468,4 +468,64 @@ router.post('/food-db/:id/grab-image', async (req: AuthRequest, res: Response): 
   }
 });
 
+// ─── POST /admin/food-db/grab-missing-images — batch grab for items without dishImageUrl ──
+
+router.post('/food-db/grab-missing-images', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const items = await FoodItem.find({ dishImageUrl: { $exists: false }, status: { $ne: 'deprecated' } }, '_id displayName name brand').lean();
+
+    if (items.length === 0) {
+      res.json({ success: true, data: { processed: 0, succeeded: 0, failed: 0 } });
+      return;
+    }
+
+    let succeeded = 0;
+    let failed = 0;
+    const errors: { id: string; name: string; error: string }[] = [];
+
+    const model = getGenAI().getGenerativeModel({
+      model: MODELS.CHAT,
+      tools: [{ googleSearch: {} } as any],
+    });
+
+    for (const item of items) {
+      try {
+        const searchQuery = [item.displayName, item.name, item.brand].filter(Boolean).join(' ');
+        const result = await model.generateContent(
+          `Find a good food photo or product image for: "${searchQuery}". This is a food item.`
+        );
+
+        const groundingMeta = (result.response.candidates?.[0] as any)?.groundingMetadata;
+        const chunks: { web?: { uri?: string } }[] = groundingMeta?.groundingChunks || [];
+        const pageUrls = chunks
+          .map((c) => c.web?.uri)
+          .filter((u): u is string => !!u && u.startsWith('http'))
+          .slice(0, 5);
+
+        let imageUrl: string | null = null;
+        for (const url of pageUrls) {
+          imageUrl = await scrapeImage(url);
+          if (imageUrl) break;
+        }
+
+        if (imageUrl) {
+          await FoodItem.findByIdAndUpdate(item._id, { dishImageUrl: imageUrl });
+          succeeded++;
+        } else {
+          failed++;
+          errors.push({ id: String(item._id), name: item.displayName || item.name, error: 'No image found' });
+        }
+      } catch (err) {
+        failed++;
+        errors.push({ id: String(item._id), name: item.displayName || item.name, error: err instanceof Error ? err.message : 'Unknown error' });
+      }
+    }
+
+    res.json({ success: true, data: { processed: items.length, succeeded, failed, errors } });
+  } catch (err) {
+    console.error('[POST /admin/food-db/grab-missing-images]', err);
+    res.status(500).json({ success: false, error: 'Batch grab-image failed' });
+  }
+});
+
 export default router;
