@@ -48,7 +48,7 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   }
 
   // Rate limiting
-  const rateCheck = checkRateLimit(userId);
+  const rateCheck = await checkRateLimit(userId);
   if (!rateCheck.allowed) {
     res.status(429).json({
       success: false,

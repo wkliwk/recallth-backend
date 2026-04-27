@@ -8,6 +8,7 @@ import { DailyLog, IDailyLog } from '../models/DailyLog';
 import { SideEffect, ISideEffect } from '../models/SideEffect';
 import { ExerciseSession, IExerciseSession } from '../models/ExerciseSession';
 import { MealEntry, IMealEntry } from '../models/Nutrition';
+import { RateLimit } from '../models/RateLimit';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 import { buildAiUsage, AiUsage } from '../utils/aiUsage';
@@ -47,32 +48,30 @@ async function sendWithFallback(
   throw lastErr;
 }
 
-// --- Rate limiting ---
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-const rateLimitMap = new Map<string, RateLimitEntry>();
+// --- Rate limiting (MongoDB-backed, persists across restarts) ---
 const RATE_LIMIT_MAX = 30;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-export function checkRateLimit(userId: string): { allowed: boolean; remaining: number; resetAt: number } {
-  const now = Date.now();
-  const entry = rateLimitMap.get(userId);
+export async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS);
 
-  if (!entry || now >= entry.resetAt) {
-    const newEntry: RateLimitEntry = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
-    rateLimitMap.set(userId, newEntry);
-    return { allowed: true, remaining: RATE_LIMIT_MAX - 1, resetAt: newEntry.resetAt };
+  const entry = await RateLimit.findOne({ userId, windowStart: { $gt: windowStart } });
+
+  if (!entry) {
+    await RateLimit.create({ userId, windowStart: now, count: 1 });
+    return { allowed: true, remaining: RATE_LIMIT_MAX - 1, resetAt: now.getTime() + RATE_LIMIT_WINDOW_MS };
   }
 
+  const resetAt = entry.windowStart.getTime() + RATE_LIMIT_WINDOW_MS;
+
   if (entry.count >= RATE_LIMIT_MAX) {
-    return { allowed: false, remaining: 0, resetAt: entry.resetAt };
+    return { allowed: false, remaining: 0, resetAt };
   }
 
   entry.count += 1;
-  return { allowed: true, remaining: RATE_LIMIT_MAX - entry.count, resetAt: entry.resetAt };
+  await entry.save();
+  return { allowed: true, remaining: RATE_LIMIT_MAX - entry.count, resetAt };
 }
 
 // --- Language instruction builder ---
