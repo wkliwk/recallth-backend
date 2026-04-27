@@ -7,6 +7,7 @@ import { Conversation } from '../models/Conversation';
 import { DailyLog, IDailyLog } from '../models/DailyLog';
 import { SideEffect, ISideEffect } from '../models/SideEffect';
 import { ExerciseSession, IExerciseSession } from '../models/ExerciseSession';
+import { MealEntry, IMealEntry } from '../models/Nutrition';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 import { buildAiUsage, AiUsage } from '../utils/aiUsage';
@@ -131,6 +132,35 @@ function buildExerciseContext(sessions: IExerciseSession[]): string {
   return `\nRECENT EXERCISE (last 14 days):\n${entries.join('\n')}`;
 }
 
+function buildNutritionContext(mealEntries: IMealEntry[]): string {
+  if (mealEntries.length === 0) return '';
+
+  // Group meals by date and sum macros
+  const byDate = new Map<string, { calories: number; protein: number; carbs: number; fat: number }>();
+  for (const entry of mealEntries) {
+    if (!byDate.has(entry.date)) {
+      byDate.set(entry.date, { calories: 0, protein: 0, carbs: 0, fat: 0 });
+    }
+    const day = byDate.get(entry.date)!;
+    for (const food of entry.foods) {
+      day.calories += food.nutrients.get('calories') ?? 0;
+      day.protein += food.nutrients.get('protein') ?? 0;
+      day.carbs += food.nutrients.get('carbs') ?? 0;
+      day.fat += food.nutrients.get('fat') ?? 0;
+    }
+  }
+
+  if (byDate.size === 0) return '';
+
+  const lines = Array.from(byDate.entries())
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([date, n]) =>
+      `  ${date}: ${Math.round(n.calories)} kcal, protein ${Math.round(n.protein)}g, carbs ${Math.round(n.carbs)}g, fat ${Math.round(n.fat)}g`
+    );
+
+  return `\nRECENT NUTRITION (last 7 days):\n${lines.join('\n')}`;
+}
+
 // --- Staleness detection ---
 function buildStalenessContext(profile: IHealthProfile | null): string {
   if (!profile) return '';
@@ -185,7 +215,8 @@ function buildSystemPrompt(
   language: DetectedLanguage,
   journalLogs: IDailyLog[],
   sideEffects: ISideEffect[],
-  exerciseSessions: IExerciseSession[]
+  exerciseSessions: IExerciseSession[],
+  mealEntries: IMealEntry[]
 ): string {
   const profileData = profile
     ? {
@@ -217,6 +248,7 @@ function buildSystemPrompt(
   const journalContext = buildJournalContext(journalLogs);
   const sideEffectContext = buildSideEffectContext(sideEffects);
   const exerciseContext = buildExerciseContext(exerciseSessions);
+  const nutritionContext = buildNutritionContext(mealEntries);
   const stalenessContext = buildStalenessContext(profile);
 
   // Time-of-day context for situational awareness
@@ -235,7 +267,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
-${journalContext}${sideEffectContext}${exerciseContext}${stalenessContext}
+${journalContext}${sideEffectContext}${exerciseContext}${nutritionContext}${stalenessContext}
 
 ${languageInstruction}
 
@@ -706,12 +738,13 @@ export async function processChat(
   fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
   const fourteenDaysAgoISO = fourteenDaysAgo.toISOString().slice(0, 10);
 
-  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions] = await Promise.all([
+  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions, mealEntries] = await Promise.all([
     HealthProfile.findOne({ userId: userObjectId }),
     CabinetItem.find({ userId: userObjectId, active: true }),
     DailyLog.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(7),
     SideEffect.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: -1 }).limit(10),
     ExerciseSession.find({ userId: userObjectId, date: { $gte: fourteenDaysAgoISO }, status: 'completed' }).sort({ date: -1 }).limit(20),
+    MealEntry.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(50),
   ]);
 
   // For existing conversations, load them now; for new ones, defer creation until after AI succeeds
@@ -742,7 +775,7 @@ export async function processChat(
 
   // Call Gemini BEFORE creating/saving any conversation record
   // This prevents ghost conversations when the AI call fails
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions, mealEntries);
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
