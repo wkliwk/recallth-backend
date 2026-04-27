@@ -89,6 +89,66 @@ router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PUT /bloodwork/:id — update an existing bloodwork entry
+router.put('/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const id = req.params.id as string;
+
+    if (!Types.ObjectId.isValid(id)) {
+      res.status(404).json({ success: false, error: 'Entry not found' });
+      return;
+    }
+
+    const { date, marker, value, unit, refLow, refHigh } = req.body as {
+      date: unknown;
+      marker: unknown;
+      value: unknown;
+      unit: unknown;
+      refLow?: unknown;
+      refHigh?: unknown;
+    };
+
+    if (typeof date !== 'string' || !DATE_REGEX.test(date)) {
+      res.status(400).json({ error: 'date must be a valid YYYY-MM-DD string' });
+      return;
+    }
+
+    if (typeof marker !== 'string' || marker.trim().length === 0) {
+      res.status(400).json({ error: 'marker must be a non-empty string' });
+      return;
+    }
+
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      res.status(400).json({ error: 'value must be a number' });
+      return;
+    }
+
+    if (typeof unit !== 'string' || unit.trim().length === 0) {
+      res.status(400).json({ error: 'unit must be a non-empty string' });
+      return;
+    }
+
+    const parsedRefLow = typeof refLow === 'number' && Number.isFinite(refLow) ? refLow : null;
+    const parsedRefHigh = typeof refHigh === 'number' && Number.isFinite(refHigh) ? refHigh : null;
+
+    const entry = await BloodworkEntry.findOneAndUpdate(
+      { _id: id, userId: req.userId },
+      { date, marker: marker.trim(), value, unit: unit.trim(), refLow: parsedRefLow, refHigh: parsedRefHigh },
+      { new: true }
+    );
+
+    if (!entry) {
+      res.status(404).json({ success: false, error: 'Entry not found' });
+      return;
+    }
+
+    res.json({ success: true, data: entry });
+  } catch (error) {
+    console.error('Bloodwork PUT error:', error);
+    res.status(500).json({ error: 'Failed to update bloodwork entry' });
+  }
+});
+
 // POST /bloodwork/analyse — AI interpretation of latest bloodwork results
 router.post('/analyse', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
   try {
