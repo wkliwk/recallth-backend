@@ -221,6 +221,30 @@ Example for a fresh fruit (simple, high-carb, near-zero fat):
 Input: "香蕉"
 {"foods":[{"name":"香蕉","quantity":1,"unit":"隻","grams":120,"estimated":true,"nutrients":{"calories":107,"protein":1.3,"carbs":27,"fat":0.4,"sugar":14,"fiber":3.1}}],"suggestions":[]}
 
+IMPORTANT — Language: always return dish names in the SAME LANGUAGE the user typed them. If the user typed Chinese/Cantonese, output names in Traditional Chinese. If the user typed English, output English names.
+
+REFERENCE — Common HK dishes with typical per-serving calories (use as ground truth for these items):
+腸粉 (1份/3條): ~220 kcal, protein 8g, carbs 35g, fat 6g
+叉燒飯 (1碟): ~580 kcal, protein 28g, carbs 80g, fat 16g
+燒鴨飯 (1碟): ~620 kcal, protein 32g, carbs 75g, fat 20g
+白飯 (1碗/200g): ~260 kcal, protein 5g, carbs 57g, fat 0.5g
+炒飯 (1碟): ~520 kcal, protein 14g, carbs 70g, fat 18g
+雲吞麵 (1碗): ~400 kcal, protein 17g, carbs 58g, fat 10g
+牛腩麵 (1碗): ~480 kcal, protein 25g, carbs 55g, fat 16g
+蝦餃 (3粒): ~120 kcal, protein 8g, carbs 14g, fat 3g
+燒賣 (3粒): ~135 kcal, protein 9g, carbs 13g, fat 5g
+港式奶茶 (1杯/250ml, 熱/凍): ~90 kcal, protein 3g, carbs 11g, fat 3g
+凍檸茶 (1杯/400ml): ~100 kcal, protein 0g, carbs 26g, fat 0g
+鴛鴦 (1杯/250ml): ~95 kcal, protein 3g, carbs 13g, fat 3g
+蛋撻 (1個): ~200 kcal, protein 5g, carbs 25g, fat 9g
+菠蘿包 (1個): ~280 kcal, protein 6g, carbs 44g, fat 9g
+西多士 (1份): ~350 kcal, protein 8g, carbs 40g, fat 18g
+炒烏冬 (1份/280g): ~420 kcal, protein 12g, carbs 68g, fat 10g
+魚蛋粉 (1碗): ~350 kcal, protein 18g, carbs 50g, fat 7g
+豬扒包 (1個): ~450 kcal, protein 24g, carbs 42g, fat 18g
+雞翼 (1隻): ~90 kcal, protein 8g, carbs 0g, fat 6g
+煎蛋 (1隻): ~90 kcal, protein 6g, carbs 0g, fat 7g
+
 IMPORTANT — Macro accuracy for simple foods:
 For fresh fruits, vegetables, and whole foods: carbs will be the dominant macro, fat will be very low (< 1g per 100g), and protein will be low (1–3g per 100g). Do NOT apply composite-dish macro patterns to simple whole foods.
 
