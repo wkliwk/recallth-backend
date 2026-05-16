@@ -49,12 +49,15 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
 
   // Rate limiting
   const rateCheck = await checkRateLimit(userId);
+  const resetAtISO = new Date(rateCheck.resetAt).toISOString();
   if (!rateCheck.allowed) {
+    res.set('X-RateLimit-Remaining', '0');
+    res.set('X-RateLimit-Reset', resetAtISO);
     res.status(429).json({
       success: false,
       error: 'Rate limit exceeded. Maximum 30 messages per hour.',
       data: {
-        resetAt: new Date(rateCheck.resetAt).toISOString(),
+        resetAt: resetAtISO,
         remaining: 0,
       },
     });
@@ -82,6 +85,8 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     cleanSessionTitle
   );
 
+  res.set('X-RateLimit-Remaining', String(rateCheck.remaining));
+  res.set('X-RateLimit-Reset', resetAtISO);
   res.status(200).json({
     success: true,
     error: null,
