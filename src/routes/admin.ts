@@ -70,6 +70,12 @@ async function scrapeImage(pageUrl: string): Promise<string | null> {
 
 const router = Router();
 
+const VALID_CATEGORIES = [
+  'rice_noodles','protein','dim_sum','soup','bread_pastry','drinks',
+  'desserts','snacks','fast_food','whole_food','packaged',
+  'cha_chaan_teng','hk_street_food',
+] as const;
+
 // All admin routes require adminAuth
 router.use(adminAuth);
 
@@ -308,7 +314,7 @@ router.post('/food-db/url-lookup', async (req: AuthRequest, res: Response): Prom
       `Visible text: ${visibleText}`,
     ].filter(Boolean).join('\n');
 
-    const CATEGORIES = ['rice_noodles','protein','dim_sum','soup','bread_pastry','drinks','desserts','snacks','fast_food','whole_food','packaged'];
+    const CATEGORIES = ['rice_noodles','protein','dim_sum','soup','bread_pastry','drinks','desserts','snacks','fast_food','whole_food','packaged','cha_chaan_teng','hk_street_food'];
 
     const prompt = `You are a food nutritionist and database expert. Extract food item data from this web page.
 
@@ -525,6 +531,72 @@ router.post('/food-db/grab-missing-images', async (req: AuthRequest, res: Respon
   } catch (err) {
     console.error('[POST /admin/food-db/grab-missing-images]', err);
     res.status(500).json({ success: false, error: 'Batch grab-image failed' });
+  }
+});
+
+// ─── POST /admin/food-db/bulk — batch import food items ──────────────────────
+
+router.post('/food-db/bulk', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { items } = req.body as { items?: unknown };
+    if (!Array.isArray(items)) {
+      res.status(400).json({ success: false, error: '`items` must be an array' });
+      return;
+    }
+
+    const created: string[] = [];
+    const skipped: Array<{ index: number; reason: string }> = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const raw = items[i] as Record<string, unknown>;
+      if (!raw || typeof raw !== 'object') {
+        skipped.push({ index: i, reason: 'Not an object' });
+        continue;
+      }
+      const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+      const category = typeof raw.category === 'string' ? raw.category.trim() : '';
+      if (!name) { skipped.push({ index: i, reason: 'Missing name' }); continue; }
+      if (!VALID_CATEGORIES.includes(category as typeof VALID_CATEGORIES[number])) {
+        skipped.push({ index: i, reason: `Invalid category "${category}"` });
+        continue;
+      }
+
+      const nutrients = raw.nutrients as Record<string, number> | undefined;
+      const per100g = nutrients ? {
+        calories: nutrients.calories ?? 0,
+        protein: nutrients.protein ?? 0,
+        carbs: nutrients.carbs ?? 0,
+        fat: nutrients.fat ?? 0,
+        sugar: nutrients.sugar ?? undefined,
+        fiber: nutrients.fiber ?? undefined,
+        sodium: nutrients.sodium ?? undefined,
+      } : { calories: 0, protein: 0, carbs: 0, fat: 0 };
+
+      const doc = new FoodItem({
+        name: name.toLowerCase(),
+        displayName: typeof raw.displayName === 'string' ? raw.displayName : name,
+        aliases: [],
+        lang: 'zh-HK',
+        category,
+        per100g,
+        flags: computeNutritionFlags(per100g, typeof raw.defaultServingGrams === 'number' ? raw.defaultServingGrams : 100),
+        defaultServingGrams: typeof raw.defaultServingGrams === 'number' ? raw.defaultServingGrams : 100,
+        defaultServingUnit: typeof raw.defaultServingUnit === 'string' ? raw.defaultServingUnit : 'g',
+        source: 'reference',
+        status: 'active',
+        imageUrl: typeof raw.imageUrl === 'string' ? raw.imageUrl : undefined,
+      });
+      await doc.save();
+      created.push(doc._id.toString());
+    }
+
+    res.json({
+      success: true,
+      data: { created: created.length, skipped: skipped.length, skippedItems: skipped },
+    });
+  } catch (err) {
+    console.error('[POST /admin/food-db/bulk]', err);
+    res.status(500).json({ success: false, error: 'Bulk import failed' });
   }
 });
 
