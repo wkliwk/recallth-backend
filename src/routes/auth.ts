@@ -4,6 +4,22 @@ import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
 import { User } from '../models/User';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { BloodworkEntry } from '../models/BloodworkEntry';
+import { BodyStatEntry } from '../models/BodyStatEntry';
+import { CabinetItem } from '../models/CabinetItem';
+import { CabinetChangeLog } from '../models/CabinetChangeLog';
+import { Conversation } from '../models/Conversation';
+import { DailyLog } from '../models/DailyLog';
+import { DoseLog } from '../models/DoseLog';
+import { ExtractionReview } from '../models/ExtractionReview';
+import { GoalCheckIn } from '../models/GoalCheckIn';
+import { HealthProfile } from '../models/HealthProfile';
+import { InsightCache } from '../models/InsightCache';
+import { IntakeLog } from '../models/IntakeLog';
+import { MealEntry, UserNutritionCategory, UserNutritionCustomConfig } from '../models/Nutrition';
+import { SideEffect } from '../models/SideEffect';
+import { UserFoodItem } from '../models/UserFoodItem';
+import { UserSettings } from '../models/UserSettings';
 
 const router = Router();
 const SALT_ROUNDS = 12;
@@ -168,6 +184,40 @@ router.post('/link-google', authenticate, async (req: AuthRequest, res: Response
 
   user.googleId = googleId;
   await user.save();
+
+  res.json({ success: true, data: null, error: null });
+});
+
+// DELETE /auth/account — permanently delete the authenticated user and all their data
+router.delete('/account', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ success: false, data: null, error: 'Unauthorized' });
+    return;
+  }
+
+  await Promise.all([
+    BloodworkEntry.deleteMany({ userId }),
+    BodyStatEntry.deleteMany({ userId }),
+    CabinetItem.deleteMany({ userId }),
+    CabinetChangeLog.deleteMany({ userId }),
+    Conversation.deleteMany({ userId }),
+    DailyLog.deleteMany({ userId }),
+    DoseLog.deleteMany({ userId }),
+    ExtractionReview.deleteMany({ userId }),
+    GoalCheckIn.deleteMany({ userId }),
+    HealthProfile.deleteOne({ userId }),
+    InsightCache.deleteMany({ userId }),
+    IntakeLog.deleteMany({ userId }),
+    MealEntry.deleteMany({ userId }),
+    UserNutritionCategory.deleteMany({ userId }),
+    UserNutritionCustomConfig.deleteMany({ userId }),
+    SideEffect.deleteMany({ userId }),
+    UserFoodItem.deleteMany({ userId }),
+    UserSettings.deleteOne({ userId }),
+  ]);
+
+  await User.deleteOne({ _id: userId });
 
   res.json({ success: true, data: null, error: null });
 });
