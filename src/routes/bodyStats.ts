@@ -58,6 +58,39 @@ router.post('/', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /body-stats/latest — return most recent values for each stat
+router.get('/latest', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId;
+    // Fetch last 90 entries (enough history to find latest of each stat)
+    const entries = await BodyStatEntry.find({ userId })
+      .sort({ date: -1 })
+      .limit(90)
+      .lean();
+
+    type StatValue = { value: number; date: string } | null;
+    const result: {
+      weight: StatValue;
+      bodyFat: StatValue;
+      muscleMass: StatValue;
+      waist: StatValue;
+    } = { weight: null, bodyFat: null, muscleMass: null, waist: null };
+
+    for (const e of entries) {
+      if (result.weight === null && e.weight != null) result.weight = { value: e.weight, date: e.date };
+      if (result.bodyFat === null && e.bodyFat != null) result.bodyFat = { value: e.bodyFat, date: e.date };
+      if (result.muscleMass === null && e.muscleMass != null) result.muscleMass = { value: e.muscleMass, date: e.date };
+      if (result.waist === null && e.waist != null) result.waist = { value: e.waist, date: e.date };
+      if (result.weight && result.bodyFat && result.muscleMass && result.waist) break;
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('[GET /body-stats/latest]', error);
+    res.status(500).json({ success: false, error: 'Failed to retrieve latest body stats' });
+  }
+});
+
 // GET /body-stats — list entries, sorted by date desc
 router.get('/', authenticate, async (req: AuthRequest, res: Response) => {
   try {

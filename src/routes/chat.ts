@@ -96,27 +96,38 @@ chatRouter.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
   });
 });
 
-// GET /chat/history — list conversations (paginated, 20/page)
+// GET /chat/history — list conversations, supports ?limit=N&offset=M or legacy ?page=N
 chatRouter.get('/history', async (req: AuthRequest, res: Response): Promise<void> => {
   const userId = req.userId as string;
-  const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10));
-  const limit = 20;
-  const skip = (page - 1) * limit;
+  const { limit: limitParam, offset: offsetParam, page: pageParam } = req.query as {
+    limit?: string; offset?: string; page?: string;
+  };
 
-  const conversations = await Conversation.aggregate([
-    { $match: { userId: new Types.ObjectId(userId), 'messages.0': { $exists: true } } },
-    { $sort: { createdAt: -1 } },
-    { $skip: skip },
-    { $limit: limit },
-    {
-      $project: {
-        _id: 1,
-        title: 1,
-        summary: 1,
-        createdAt: 1,
-        messageCount: { $size: '$messages' },
+  const limit = Math.min(100, Math.max(1, parseInt(limitParam ?? '20', 10) || 20));
+  const page = Math.max(1, parseInt(pageParam ?? '1', 10));
+  const skip = offsetParam != null
+    ? Math.max(0, parseInt(offsetParam, 10) || 0)
+    : (page - 1) * limit;
+
+  const matchStage = { userId: new Types.ObjectId(userId), 'messages.0': { $exists: true } };
+
+  const [conversations, total] = await Promise.all([
+    Conversation.aggregate([
+      { $match: matchStage },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $project: {
+          _id: 1,
+          title: 1,
+          summary: 1,
+          createdAt: 1,
+          messageCount: { $size: '$messages' },
+        },
       },
-    },
+    ]),
+    Conversation.countDocuments(matchStage),
   ]);
 
   res.status(200).json({
@@ -124,8 +135,11 @@ chatRouter.get('/history', async (req: AuthRequest, res: Response): Promise<void
     error: null,
     data: {
       conversations,
-      page,
+      total,
+      hasMore: skip + conversations.length < total,
       limit,
+      offset: skip,
+      page,
     },
   });
 });
