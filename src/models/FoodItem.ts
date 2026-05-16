@@ -11,7 +11,9 @@ export type FoodCategory =
   | 'snacks'
   | 'fast_food'
   | 'whole_food'
-  | 'packaged';
+  | 'packaged'
+  | 'cha_chaan_teng'
+  | 'hk_street_food';
 
 export type AccuracyTier = 'A' | 'B' | 'C';
 export type FoodSource = 'official' | 'openfoodfacts' | 'community' | 'reference' | 'ai_estimated';
