@@ -433,4 +433,64 @@ Rules:
   }
 });
 
+// POST /bloodwork/ocr — extract bloodwork markers from a lab report image
+router.post('/ocr', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const { image, mimeType } = req.body as { image?: unknown; mimeType?: unknown };
+
+    if (typeof image !== 'string' || !image.trim()) {
+      res.status(400).json({ success: false, data: null, error: '`image` (base64 string) is required' });
+      return;
+    }
+
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    const resolvedMime = typeof mimeType === 'string' && validTypes.includes(mimeType) ? mimeType : 'image/jpeg';
+
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+
+    const prompt = `You are a medical lab report parser. Extract all bloodwork markers from this lab report image.
+
+Return ONLY a valid JSON array (no markdown fences, no explanation):
+[
+  { "name": string, "value": number, "unit": string },
+  ...
+]
+
+Rules:
+- Include every measurable marker visible in the image (e.g. Hemoglobin, Glucose, TSH, LDL, HDL, etc.)
+- "name" should be the standard English marker name (e.g. "Hemoglobin", "Fasting Glucose", "TSH")
+- "value" must be a numeric value
+- "unit" should be the unit shown (e.g. "g/dL", "mmol/L", "mIU/L", "mg/dL")
+- If no markers can be read, return an empty array: []
+- Do NOT include reference ranges or flags — only name, value, unit`;
+
+    const result = await model.generateContent([
+      { text: prompt },
+      { inlineData: { data: image, mimeType: resolvedMime } },
+    ]);
+
+    const raw = result.response.text().trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
+    let markers: Array<{ name: string; value: number; unit: string }> = [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        markers = parsed.filter(
+          (m) => typeof m?.name === 'string' && typeof m?.value === 'number' && typeof m?.unit === 'string'
+        );
+      }
+    } catch {
+      // Unparseable — return empty array rather than 500
+    }
+
+    res.json({ success: true, data: markers, error: null });
+  } catch (err) {
+    console.error('[POST /bloodwork/ocr]', err);
+    res.status(500).json({ success: false, data: null, error: 'OCR processing failed' });
+  }
+});
+
 export { router as bloodworkRouter };
