@@ -1280,10 +1280,10 @@ router.get('/schedule', async (req: AuthRequest, res: Response): Promise<void> =
   type Slot = 'morning' | 'afternoon' | 'evening' | 'night' | 'anytime';
 
   const SLOT_KEYWORDS: Record<Slot, string[]> = {
-    morning: ['morning', 'am', 'wake up', 'breakfast', 'empty stomach'],
-    afternoon: ['afternoon', 'lunch', 'midday'],
-    evening: ['evening', 'dinner', 'pm', 'with dinner'],
-    night: ['night', 'bedtime', 'before bed', 'sleep'],
+    morning: ['morning', 'am', 'wake up', 'breakfast', 'with breakfast', 'empty stomach', 'post-workout', 'after workout', 'post workout'],
+    afternoon: ['afternoon', 'lunch', 'with lunch', 'midday', 'noon'],
+    evening: ['evening', 'dinner', 'pm', 'with dinner', 'supper', 'with supper'],
+    night: ['night', 'bedtime', 'before bed', 'sleep', 'nighttime'],
     anytime: [],
   };
 
