@@ -10,6 +10,7 @@ import { ExerciseSession, IExerciseSession } from '../models/ExerciseSession';
 import { MealEntry, IMealEntry } from '../models/Nutrition';
 import { RateLimit } from '../models/RateLimit';
 import { DoseLog, IDoseLog } from '../models/DoseLog';
+import { DoseEffect } from '../models/DoseEffect';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 import { buildAiUsage, AiUsage } from '../utils/aiUsage';
@@ -232,6 +233,58 @@ Recent doses: ${recent.join(', ')}
 Use this to personalise advice (e.g. "I notice you usually take your supplements around ${peakLabel}").`;
 }
 
+async function buildEffectRatingsContext(userId: Types.ObjectId): Promise<string> {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const pipeline = [
+    { $match: { userId, ratedAt: { $gte: thirtyDaysAgo } } },
+    {
+      $group: {
+        _id: '$supplementName',
+        count: { $sum: 1 },
+        avgEnergy: { $avg: '$energy' },
+        avgFocus: { $avg: '$focus' },
+        avgSleep: { $avg: '$sleep' },
+        avgMood: { $avg: '$mood' },
+      },
+    },
+    { $match: { count: { $gte: 3 } } },
+    { $sort: { count: -1 as const } },
+  ];
+
+  const raw = await DoseEffect.aggregate<{
+    _id: string;
+    count: number;
+    avgEnergy: number | null;
+    avgFocus: number | null;
+    avgSleep: number | null;
+    avgMood: number | null;
+  }>(pipeline);
+
+  if (raw.length === 0) return '';
+
+  const fmt = (v: number | null | undefined): string | null => {
+    if (v === null || v === undefined) return null;
+    return (Math.round(v * 10) / 10).toFixed(1);
+  };
+
+  const parts = raw.map((doc): string => {
+    const dims: string[] = [];
+    const energy = fmt(doc.avgEnergy);
+    const focus = fmt(doc.avgFocus);
+    const sleep = fmt(doc.avgSleep);
+    const mood = fmt(doc.avgMood);
+    if (energy !== null) dims.push(`energy=${energy}`);
+    if (focus !== null) dims.push(`focus=${focus}`);
+    if (sleep !== null) dims.push(`sleep=${sleep}`);
+    if (mood !== null) dims.push(`mood=${mood}`);
+    return `${doc._id}: ${dims.join(', ')} (${doc.count} ratings)`;
+  });
+
+  return `\nEFFECT RATINGS (last 30 days):\n${parts.join('; ')}`;
+}
+
 // --- System prompt builder ---
 function buildSystemPrompt(
   profile: IHealthProfile | null,
@@ -241,7 +294,8 @@ function buildSystemPrompt(
   sideEffects: ISideEffect[],
   exerciseSessions: IExerciseSession[],
   mealEntries: IMealEntry[],
-  doseLogs: IDoseLog[]
+  doseLogs: IDoseLog[],
+  effectRatingsContext: string
 ): string {
   const profileData = profile
     ? {
@@ -277,6 +331,7 @@ function buildSystemPrompt(
   const nutritionContext = buildNutritionContext(mealEntries);
   const stalenessContext = buildStalenessContext(profile);
   const doseTimingContext = buildDoseTimingContext(doseLogs);
+  const effectRatings = effectRatingsContext;
 
   // Time-of-day context for situational awareness
   const now = new Date();
@@ -294,7 +349,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
-${journalContext}${sideEffectContext}${exerciseContext}${nutritionContext}${stalenessContext}${doseTimingContext}
+${journalContext}${sideEffectContext}${exerciseContext}${nutritionContext}${stalenessContext}${doseTimingContext}${effectRatings}
 
 ${languageInstruction}
 
@@ -765,7 +820,7 @@ export async function processChat(
   fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
   const fourteenDaysAgoISO = fourteenDaysAgo.toISOString().slice(0, 10);
 
-  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs] = await Promise.all([
+  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs, effectRatingsContext] = await Promise.all([
     HealthProfile.findOne({ userId: userObjectId }),
     CabinetItem.find({ userId: userObjectId, active: true }),
     DailyLog.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(7),
@@ -773,6 +828,7 @@ export async function processChat(
     ExerciseSession.find({ userId: userObjectId, date: { $gte: fourteenDaysAgoISO }, status: 'completed' }).sort({ date: -1 }).limit(20),
     MealEntry.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(50),
     DoseLog.find({ userId: userObjectId, takenAt: { $gte: fourteenDaysAgo } }).sort({ takenAt: -1 }).limit(50).lean(),
+    buildEffectRatingsContext(userObjectId),
   ]);
 
   // For existing conversations, load them now; for new ones, defer creation until after AI succeeds
@@ -803,7 +859,7 @@ export async function processChat(
 
   // Call Gemini BEFORE creating/saving any conversation record
   // This prevents ghost conversations when the AI call fails
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs, effectRatingsContext);
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [

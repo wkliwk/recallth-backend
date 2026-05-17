@@ -1,6 +1,9 @@
 import { Router, Response } from 'express';
+import { Types } from 'mongoose';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { IntakeLog } from '../models/IntakeLog';
+import { DoseLog } from '../models/DoseLog';
+import { DoseEffect } from '../models/DoseEffect';
 
 const router = Router();
 
@@ -95,6 +98,77 @@ router.get('/streak', authenticate, async (req: AuthRequest, res: Response) => {
   } catch (error) {
     console.error('Intake streak GET error:', error);
     res.status(500).json({ error: 'Failed to retrieve streak data' });
+  }
+});
+
+// POST /intake/effect — rate how you felt after a dose (upsert by doseLogId)
+router.post('/effect', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = new Types.ObjectId(req.userId);
+    const { doseLogId, supplementId, supplementName, energy, focus, sleep, mood } = req.body as {
+      doseLogId?: string;
+      supplementId?: string;
+      supplementName?: string;
+      energy?: unknown;
+      focus?: unknown;
+      sleep?: unknown;
+      mood?: unknown;
+    };
+
+    // Validate required fields
+    if (!doseLogId || !Types.ObjectId.isValid(doseLogId)) {
+      res.status(400).json({ success: false, data: null, error: 'doseLogId is required and must be a valid ObjectId' });
+      return;
+    }
+    if (!supplementId || !Types.ObjectId.isValid(supplementId)) {
+      res.status(400).json({ success: false, data: null, error: 'supplementId is required and must be a valid ObjectId' });
+      return;
+    }
+    if (!supplementName || typeof supplementName !== 'string' || supplementName.trim() === '') {
+      res.status(400).json({ success: false, data: null, error: 'supplementName is required' });
+      return;
+    }
+
+    // Validate that the dose log exists and belongs to this user
+    const doseLog = await DoseLog.findOne({ _id: new Types.ObjectId(doseLogId), userId }).lean();
+    if (!doseLog) {
+      res.status(404).json({ success: false, data: null, error: 'Dose log not found or does not belong to this user' });
+      return;
+    }
+
+    // Validate rating values (optional but must be 1–5 if provided)
+    const ratings: { energy?: number; focus?: number; sleep?: number; mood?: number } = {};
+    const ratingFields = { energy, focus, sleep, mood } as Record<string, unknown>;
+    for (const [field, value] of Object.entries(ratingFields)) {
+      if (value !== undefined && value !== null) {
+        const num = Number(value);
+        if (isNaN(num) || num < 1 || num > 5 || !Number.isInteger(num)) {
+          res.status(400).json({ success: false, data: null, error: `${field} must be an integer between 1 and 5` });
+          return;
+        }
+        (ratings as Record<string, number>)[field] = num;
+      }
+    }
+
+    // Upsert by doseLogId — allow re-rating the same dose
+    const effect = await DoseEffect.findOneAndUpdate(
+      { doseLogId: new Types.ObjectId(doseLogId) },
+      {
+        $set: {
+          userId,
+          supplementId: new Types.ObjectId(supplementId),
+          supplementName: supplementName.trim(),
+          ratedAt: new Date(),
+          ...ratings,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json({ success: true, data: effect, error: null });
+  } catch (error) {
+    console.error('Intake effect POST error:', error);
+    res.status(500).json({ success: false, data: null, error: 'Failed to save effect rating' });
   }
 });
 
