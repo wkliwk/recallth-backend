@@ -8,6 +8,8 @@ export interface IUserSettings extends Document {
   emailDigestEnabled: boolean;
   emailDigestDay: string; // e.g. "sunday"
   communityContributeEnabled: boolean; // opt-out of contributing to community food DB
+  freezeTokens: number; // streak freeze tokens (0–2)
+  lastFreezeGrantedStreak: number; // streak length at which last token was granted (idempotency guard)
   createdAt: Date;
   updatedAt: Date;
 }
@@ -21,6 +23,8 @@ const UserSettingsSchema = new Schema<IUserSettings>(
     emailDigestEnabled: { type: Boolean, default: false },
     emailDigestDay: { type: String, default: 'sunday' },
     communityContributeEnabled: { type: Boolean, default: true },
+    freezeTokens: { type: Number, default: 0 },
+    lastFreezeGrantedStreak: { type: Number, default: 0 },
   },
   { timestamps: true },
 );

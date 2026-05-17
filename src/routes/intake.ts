@@ -4,12 +4,23 @@ import { authenticate, AuthRequest } from '../middleware/auth';
 import { IntakeLog } from '../models/IntakeLog';
 import { DoseLog } from '../models/DoseLog';
 import { DoseEffect } from '../models/DoseEffect';
+import { UserSettings } from '../models/UserSettings';
 
 const router = Router();
+
+const FREEZE_TOKEN_CAP = 2;
+const FREEZE_GRANT_INTERVAL = 14; // grant 1 token every N days of streak
 
 /** Returns today's date in YYYY-MM-DD UTC */
 function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** Returns yesterday's date in YYYY-MM-DD UTC */
+function yesterdayUTC(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /** Compute currentStreak and longestStreak from a sorted (asc) list of YYYY-MM-DD date strings */
@@ -56,18 +67,45 @@ export function computeStreaks(dates: string[]): { currentStreak: number; longes
 router.post('/log', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const today = todayUTC();
+    const userId = req.userId!;
+
     await IntakeLog.findOneAndUpdate(
-      { userId: req.userId, date: today },
-      { userId: req.userId, date: today },
+      { userId, date: today },
+      { userId, date: today },
       { upsert: true, new: true },
     );
 
     // Compute streaks from all logs
-    const allLogs = await IntakeLog.find({ userId: req.userId }).sort({ date: 1 }).lean();
+    const allLogs = await IntakeLog.find({ userId }).sort({ date: 1 }).lean();
     const dates = allLogs.map((l) => l.date);
     const { currentStreak, longestStreak } = computeStreaks(dates);
 
-    res.json({ date: today, currentStreak, longestStreak });
+    // Grant freeze token at every FREEZE_GRANT_INTERVAL-day milestone (idempotent via lastFreezeGrantedStreak)
+    let freezeGranted = false;
+    let settings = await UserSettings.findOne({ userId }).lean();
+    const currentTokens = settings?.freezeTokens ?? 0;
+    const lastGrantedStreak = settings?.lastFreezeGrantedStreak ?? 0;
+
+    if (
+      currentStreak > 0 &&
+      currentStreak % FREEZE_GRANT_INTERVAL === 0 &&
+      currentStreak !== lastGrantedStreak &&
+      currentTokens < FREEZE_TOKEN_CAP
+    ) {
+      await UserSettings.findOneAndUpdate(
+        { userId },
+        {
+          $inc: { freezeTokens: 1 },
+          $set: { lastFreezeGrantedStreak: currentStreak },
+        },
+        { upsert: true },
+      );
+      freezeGranted = true;
+    }
+
+    const finalTokens = freezeGranted ? currentTokens + 1 : currentTokens;
+
+    res.json({ date: today, currentStreak, longestStreak, freezeGranted, freezeTokens: finalTokens });
   } catch (error) {
     console.error('Intake log POST error:', error);
     res.status(500).json({ error: 'Failed to log intake' });
@@ -86,18 +124,76 @@ router.get('/status', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
-// GET /intake/streak — return streak data
+// GET /intake/streak — return streak data including freeze token count
 router.get('/streak', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const allLogs = await IntakeLog.find({ userId: req.userId }).sort({ date: 1 }).lean();
+    const userId = req.userId!;
+    const [allLogs, settings] = await Promise.all([
+      IntakeLog.find({ userId }).sort({ date: 1 }).lean(),
+      UserSettings.findOne({ userId }).lean(),
+    ]);
     const dates = allLogs.map((l) => l.date);
     const { currentStreak, longestStreak } = computeStreaks(dates);
     const lastLoggedDate = dates.length > 0 ? dates[dates.length - 1] : null;
 
-    res.json({ currentStreak, longestStreak, lastLoggedDate });
+    res.json({
+      currentStreak,
+      longestStreak,
+      lastLoggedDate,
+      freezeTokens: settings?.freezeTokens ?? 0,
+    });
   } catch (error) {
     console.error('Intake streak GET error:', error);
     res.status(500).json({ error: 'Failed to retrieve streak data' });
+  }
+});
+
+// POST /intake/apply-freeze — auto-consume a freeze token when yesterday was missed
+// Adds a retroactive IntakeLog for yesterday, preserving the streak.
+router.post('/apply-freeze', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const yesterday = yesterdayUTC();
+
+    const [settings, yesterdayLog] = await Promise.all([
+      UserSettings.findOne({ userId }).lean(),
+      IntakeLog.findOne({ userId, date: yesterday }).lean(),
+    ]);
+
+    if (!settings || (settings.freezeTokens ?? 0) <= 0) {
+      res.status(400).json({ success: false, error: 'No freeze tokens available' });
+      return;
+    }
+
+    if (yesterdayLog) {
+      // Yesterday already logged — no freeze needed
+      res.status(400).json({ success: false, error: 'Yesterday was already logged — no freeze needed' });
+      return;
+    }
+
+    // Add retroactive intake log for yesterday
+    await IntakeLog.findOneAndUpdate(
+      { userId, date: yesterday },
+      { userId, date: yesterday },
+      { upsert: true, new: true },
+    );
+
+    // Decrement token
+    await UserSettings.findOneAndUpdate(
+      { userId },
+      { $inc: { freezeTokens: -1 } },
+    );
+
+    // Recompute streak
+    const allLogs = await IntakeLog.find({ userId }).sort({ date: 1 }).lean();
+    const dates = allLogs.map((l) => l.date);
+    const { currentStreak } = computeStreaks(dates);
+    const tokensLeft = Math.max(0, (settings.freezeTokens ?? 0) - 1);
+
+    res.json({ success: true, streak: currentStreak, tokensLeft });
+  } catch (error) {
+    console.error('Intake apply-freeze POST error:', error);
+    res.status(500).json({ error: 'Failed to apply streak freeze' });
   }
 });
 
