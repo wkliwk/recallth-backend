@@ -6,6 +6,7 @@ export interface IDoseLog extends Document {
   supplementName: string;
   slot: string;
   takenAt: Date;
+  late?: boolean;
   createdAt: Date;
 }
 
@@ -16,6 +17,7 @@ const DoseLogSchema = new Schema<IDoseLog>(
     supplementName: { type: String, required: true },
     slot: { type: String, default: '' },
     takenAt: { type: Date, required: true },
+    late: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

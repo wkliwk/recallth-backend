@@ -14,11 +14,12 @@ router.post('/log-dose', async (req: AuthRequest, res: Response): Promise<void> 
     const userId = req.userId;
     if (!userId) { res.status(401).json({ success: false, data: null, error: 'Unauthorized' }); return; }
 
-    const { supplementId, supplementName, slot, takenAt } = req.body as {
+    const { supplementId, supplementName, slot, takenAt, late } = req.body as {
       supplementId?: unknown;
       supplementName?: unknown;
       slot?: unknown;
       takenAt?: unknown;
+      late?: unknown;
     };
 
     if (!supplementId || !Types.ObjectId.isValid(String(supplementId))) {
@@ -42,6 +43,7 @@ router.post('/log-dose', async (req: AuthRequest, res: Response): Promise<void> 
       supplementName: supplementName.trim(),
       slot: typeof slot === 'string' ? slot : '',
       takenAt: takenAtDate,
+      late: late === true,
     });
 
     res.status(201).json({ success: true, data: log, error: null });
