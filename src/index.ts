@@ -29,6 +29,7 @@ import nutritionRouter from './routes/nutrition';
 import exerciseRouter from './routes/exercise';
 import adminRouter from './routes/admin';
 import { recommendationsRouter } from './routes/recommendations';
+import { effectsRouter } from './routes/effects';
 import { authenticate } from './middleware/auth';
 import { startReminderJob } from './services/reminderJob';
 
@@ -69,6 +70,7 @@ app.use('/nutrition', authenticate, nutritionRouter);
 app.use('/exercise', authenticate, exerciseRouter);
 app.use('/admin', adminRouter);
 app.use('/recommendations', recommendationsRouter);
+app.use('/effects', authenticate, effectsRouter);
 
 // Error handling
 app.use(errorHandler);
