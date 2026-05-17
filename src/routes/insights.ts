@@ -4,10 +4,12 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { InsightCache } from '../models/InsightCache';
 import { DailyLog } from '../models/DailyLog';
+import { DoseLog } from '../models/DoseLog';
 import { SideEffect } from '../models/SideEffect';
 import { BloodworkEntry } from '../models/BloodworkEntry';
 import { CabinetItem } from '../models/CabinetItem';
 import { HealthProfile } from '../models/HealthProfile';
+import { AiCache, getCached, setCached } from '../models/AiCache';
 import { MODELS } from '../config/models';
 import { buildAiUsage } from '../utils/aiUsage';
 
@@ -288,6 +290,166 @@ Rules:
   } catch (err) {
     console.error('[POST /insights/journal-insights]', err);
     res.status(500).json({ success: false, data: null, error: 'Journal insights generation failed' });
+  }
+});
+
+// GET /insights/monthly-summary?month=YYYY-MM
+// Returns adherence stats and an AI insight sentence for the given calendar month.
+// Defaults to the previous calendar month when ?month is omitted.
+router.get('/monthly-summary', async (req: AuthRequest, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ success: false, data: null, error: 'Unauthorized' });
+      return;
+    }
+
+    // Resolve target month
+    let month: string;
+    const monthParam = (req.query as Record<string, string>).month;
+    if (monthParam) {
+      if (!/^\d{4}-\d{2}$/.test(monthParam)) {
+        res.status(400).json({ success: false, data: null, error: 'Invalid month format. Use YYYY-MM.' });
+        return;
+      }
+      month = monthParam;
+    } else {
+      const now = new Date();
+      const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      month = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    const [year, monthNum] = month.split('-').map(Number);
+    const daysInMonth = new Date(year, monthNum, 0).getDate();
+    const startDate = `${month}-01`;
+    const endDate = `${month}-${String(daysInMonth).padStart(2, '0')}`;
+
+    const userObjectId = new Types.ObjectId(userId);
+
+    // Fetch dose logs for the month
+    const monthStart = new Date(`${startDate}T00:00:00.000Z`);
+    const monthEnd = new Date(`${endDate}T23:59:59.999Z`);
+
+    const doseLogs = await DoseLog.find({
+      userId: userObjectId,
+      takenAt: { $gte: monthStart, $lte: monthEnd },
+    }).lean();
+
+    // Count distinct days logged
+    const distinctDays = new Set(
+      doseLogs.map((d) => d.takenAt.toISOString().slice(0, 10))
+    );
+
+    if (distinctDays.size < 7) {
+      res.json({ success: true, data: null, error: null });
+      return;
+    }
+
+    // Aggregate per supplement
+    const suppMap = new Map<string, { name: string; logged: number }>();
+    for (const log of doseLogs) {
+      const key = log.supplementName;
+      const existing = suppMap.get(key);
+      if (existing) {
+        existing.logged += 1;
+      } else {
+        suppMap.set(key, { name: log.supplementName, logged: 1 });
+      }
+    }
+
+    const supplements = Array.from(suppMap.values()).map((s) => ({
+      name: s.name,
+      logged: s.logged,
+      scheduled: daysInMonth,
+      pct: Math.round((s.logged / daysInMonth) * 100),
+    }));
+
+    const totalLogs = doseLogs.length;
+    const logCount = totalLogs;
+    const dayCount = daysInMonth;
+    const totalScheduled = supplements.length * daysInMonth;
+    const adherencePct = totalScheduled > 0
+      ? Math.min(100, Math.round((totalLogs / totalScheduled) * 100))
+      : 0;
+
+    // Best and worst supplement
+    const sorted = [...supplements].sort((a, b) => b.pct - a.pct);
+    const bestSupplement = sorted[0] ?? null;
+    const worstSupplement = sorted[sorted.length - 1] ?? null;
+
+    // Fetch last 4 daily logs in the month for journal context
+    const journalLogs = await DailyLog.find({
+      userId: userObjectId,
+      date: { $gte: startDate, $lte: endDate },
+    })
+      .sort({ date: -1 })
+      .limit(4)
+      .lean();
+
+    // Generate or retrieve cached AI insight
+    const cacheKey = `monthly-summary-insight:${userId}:${month}`;
+    const cacheType = 'monthly-summary';
+
+    let aiInsight = await getCached<string>(cacheType, cacheKey);
+
+    if (!aiInsight) {
+      const doseContext = supplements
+        .map((s) => `${s.name}: ${s.logged}/${s.scheduled} days (${s.pct}%)`)
+        .join(', ');
+
+      const journalContext = journalLogs.length > 0
+        ? journalLogs
+            .map((l) => {
+              const parts: string[] = [`${l.date}: mood ${l.mood}/5, energy ${l.energy}/5`];
+              if (l.notes) parts.push(`notes: "${l.notes.slice(0, 80)}"`);
+              return parts.join(' ');
+            })
+            .join('\n')
+        : 'No journal entries available';
+
+      const prompt = `You are a health pattern analyst for Recallth, a supplement tracking app. Summarise in 1-2 sentences what patterns were observed in the user's supplement adherence and wellbeing data for ${month}.
+
+Dose logs:
+${doseContext}
+
+Recent journal entries:
+${journalContext}
+
+Rules:
+- Reference specific supplement names and adherence numbers
+- If journal data shows a pattern (e.g. mood/energy on days a supplement was taken), mention it
+- Be encouraging and non-alarmist
+- Return ONLY the plain text insight — no JSON, no markdown, no headings
+- This is general wellness information, not medical advice`;
+
+      const model = getGenAI().getGenerativeModel({ model: MODELS.EXTRACTION });
+      const result = await model.generateContent(prompt);
+      const usage = result.response.usageMetadata;
+      console.log(
+        `[AI] model=${MODELS.EXTRACTION} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=monthly-summary`
+      );
+
+      aiInsight = result.response.text().trim();
+      await setCached(cacheType, cacheKey, aiInsight);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        month,
+        adherencePct,
+        dayCount,
+        logCount,
+        bestSupplement,
+        worstSupplement,
+        aiInsight,
+        supplements,
+      },
+      error: null,
+    });
+  } catch (err) {
+    console.error('[GET /insights/monthly-summary]', err);
+    res.status(500).json({ success: false, data: null, error: 'Monthly summary generation failed' });
   }
 });
 
