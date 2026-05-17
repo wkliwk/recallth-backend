@@ -255,7 +255,9 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
       const rawImageUrl = proxyMatch ? decodeURIComponent(proxyMatch[1]) : imageUrl;
       imageUrl = `${currentBaseUrl}/img/image-proxy?url=${encodeURIComponent(rawImageUrl)}`;
     }
-    return { ...item, daysSupplyRemaining, lowSupplyWarning, imageUrl };
+    const now = new Date();
+    const isPaused = item.pausedUntil != null && item.pausedUntil > now;
+    return { ...item, daysSupplyRemaining, lowSupplyWarning, imageUrl, isPaused };
   });
 
   res.json({
@@ -285,7 +287,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'purpose', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'purpose', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock', 'pausedUntil'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
@@ -356,6 +358,47 @@ router.post('/:id/refresh-research', async (req: AuthRequest, res: Response): Pr
 
   // Fire-and-forget
   void generateResearchNotes(id, item.name, item.type);
+});
+
+// POST /cabinet/:id/pause — pause a supplement for N days (or until a specific date)
+router.post('/:id/pause', async (req: AuthRequest, res: Response): Promise<void> => {
+  const id = req.params['id'] as string;
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(400).json({ success: false, data: null, error: 'Invalid item id' });
+    return;
+  }
+  const item = await CabinetItem.findById(id);
+  if (!item) { res.status(404).json({ success: false, data: null, error: 'Item not found' }); return; }
+  if (item.userId.toString() !== req.userId) { res.status(403).json({ success: false, data: null, error: 'Forbidden' }); return; }
+
+  const { days, until } = req.body as { days?: number; until?: string };
+  let pausedUntil: Date;
+  if (until) {
+    pausedUntil = new Date(until);
+  } else if (days && Number.isFinite(days) && days > 0) {
+    pausedUntil = new Date(Date.now() + days * 86_400_000);
+  } else {
+    res.status(400).json({ success: false, data: null, error: 'Provide days or until' });
+    return;
+  }
+
+  const updated = await CabinetItem.findByIdAndUpdate(id, { $set: { pausedUntil } }, { new: true });
+  res.json({ success: true, data: { ...updated!.toObject(), isPaused: true, pausedUntil: updated!.pausedUntil }, error: null });
+});
+
+// DELETE /cabinet/:id/pause — clear pause, resume supplement immediately
+router.delete('/:id/pause', async (req: AuthRequest, res: Response): Promise<void> => {
+  const id = req.params['id'] as string;
+  if (!Types.ObjectId.isValid(id)) {
+    res.status(400).json({ success: false, data: null, error: 'Invalid item id' });
+    return;
+  }
+  const item = await CabinetItem.findById(id);
+  if (!item) { res.status(404).json({ success: false, data: null, error: 'Item not found' }); return; }
+  if (item.userId.toString() !== req.userId) { res.status(403).json({ success: false, data: null, error: 'Forbidden' }); return; }
+
+  await CabinetItem.findByIdAndUpdate(id, { $unset: { pausedUntil: '' } });
+  res.json({ success: true, data: { isPaused: false }, error: null });
 });
 
 // DELETE /cabinet/:id — soft delete (set active=false + endDate=now)
