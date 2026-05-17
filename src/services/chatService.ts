@@ -9,6 +9,7 @@ import { SideEffect, ISideEffect } from '../models/SideEffect';
 import { ExerciseSession, IExerciseSession } from '../models/ExerciseSession';
 import { MealEntry, IMealEntry } from '../models/Nutrition';
 import { RateLimit } from '../models/RateLimit';
+import { DoseLog, IDoseLog } from '../models/DoseLog';
 import { detectLanguage, DetectedLanguage } from '../utils/language';
 import { MODELS } from '../config/models';
 import { buildAiUsage, AiUsage } from '../utils/aiUsage';
@@ -207,6 +208,30 @@ function buildStalenessContext(profile: IHealthProfile | null): string {
 ${staleItems.join('\n')}`;
 }
 
+function buildDoseTimingContext(doseLogs: IDoseLog[]): string {
+  if (doseLogs.length === 0) return '';
+  const byHour: Record<number, number> = {};
+  for (const log of doseLogs) {
+    const h = new Date(log.takenAt).getHours();
+    byHour[h] = (byHour[h] ?? 0) + 1;
+  }
+  const peak = Object.entries(byHour).sort((a, b) => Number(b[1]) - Number(a[1]))[0];
+  const peakHour = peak ? Number(peak[0]) : null;
+  const peakLabel = peakHour !== null
+    ? (peakHour < 12 ? `${peakHour}am` : peakHour === 12 ? '12pm' : `${peakHour - 12}pm`)
+    : null;
+  const recent = doseLogs.slice(0, 5).map((l) => {
+    const d = new Date(l.takenAt);
+    const hh = d.getHours().toString().padStart(2, '0');
+    const mm = d.getMinutes().toString().padStart(2, '0');
+    return `${l.supplementName} at ${hh}:${mm}`;
+  });
+  return `\nDOSE TIMING PATTERNS (last 14 days):
+Peak logging time: ${peakLabel ?? 'varied'}
+Recent doses: ${recent.join(', ')}
+Use this to personalise advice (e.g. "I notice you usually take your supplements around ${peakLabel}").`;
+}
+
 // --- System prompt builder ---
 function buildSystemPrompt(
   profile: IHealthProfile | null,
@@ -215,7 +240,8 @@ function buildSystemPrompt(
   journalLogs: IDailyLog[],
   sideEffects: ISideEffect[],
   exerciseSessions: IExerciseSession[],
-  mealEntries: IMealEntry[]
+  mealEntries: IMealEntry[],
+  doseLogs: IDoseLog[]
 ): string {
   const profileData = profile
     ? {
@@ -250,6 +276,7 @@ function buildSystemPrompt(
   const exerciseContext = buildExerciseContext(exerciseSessions);
   const nutritionContext = buildNutritionContext(mealEntries);
   const stalenessContext = buildStalenessContext(profile);
+  const doseTimingContext = buildDoseTimingContext(doseLogs);
 
   // Time-of-day context for situational awareness
   const now = new Date();
@@ -267,7 +294,7 @@ ${JSON.stringify(profileData, null, 2)}
 
 CURRENT SUPPLEMENT & MEDICATION CABINET:
 ${JSON.stringify(cabinetData, null, 2)}
-${journalContext}${sideEffectContext}${exerciseContext}${nutritionContext}${stalenessContext}
+${journalContext}${sideEffectContext}${exerciseContext}${nutritionContext}${stalenessContext}${doseTimingContext}
 
 ${languageInstruction}
 
@@ -738,13 +765,14 @@ export async function processChat(
   fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
   const fourteenDaysAgoISO = fourteenDaysAgo.toISOString().slice(0, 10);
 
-  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions, mealEntries] = await Promise.all([
+  const [profile, cabinetItems, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs] = await Promise.all([
     HealthProfile.findOne({ userId: userObjectId }),
     CabinetItem.find({ userId: userObjectId, active: true }),
     DailyLog.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(7),
     SideEffect.find({ userId: userObjectId, date: { $gte: thirtyDaysAgo } }).sort({ date: -1 }).limit(10),
     ExerciseSession.find({ userId: userObjectId, date: { $gte: fourteenDaysAgoISO }, status: 'completed' }).sort({ date: -1 }).limit(20),
     MealEntry.find({ userId: userObjectId, date: { $gte: sevenDaysAgoISO } }).sort({ date: -1 }).limit(50),
+    DoseLog.find({ userId: userObjectId, takenAt: { $gte: fourteenDaysAgo } }).sort({ takenAt: -1 }).limit(50).lean(),
   ]);
 
   // For existing conversations, load them now; for new ones, defer creation until after AI succeeds
@@ -775,7 +803,7 @@ export async function processChat(
 
   // Call Gemini BEFORE creating/saving any conversation record
   // This prevents ghost conversations when the AI call fails
-  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions, mealEntries);
+  const systemPrompt = buildSystemPrompt(profile, cabinetItems, language, journalLogs, sideEffects, exerciseSessions, mealEntries, recentDoseLogs);
 
   // Build message parts — text + optional image
   const messageParts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [
