@@ -35,6 +35,7 @@ export interface ICabinetItem extends Document {
   dailyDoseCount?: number;
   restockThresholdDays?: number;
   outOfStock?: boolean;
+  pausedUntil?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -139,6 +140,7 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
     dailyDoseCount: { type: Number, min: 0 },
     restockThresholdDays: { type: Number, min: 0 },
     outOfStock: { type: Boolean, default: false },
+    pausedUntil: { type: Date },
   },
   { timestamps: true }
 );
