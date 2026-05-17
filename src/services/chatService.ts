@@ -241,6 +241,7 @@ function buildSystemPrompt(
     frequency: item.frequency,
     timing: item.timing,
     brand: item.brand,
+    purpose: item.purpose,
   }));
 
   const languageInstruction = buildLanguageInstruction(language);
