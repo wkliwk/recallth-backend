@@ -20,6 +20,7 @@ export interface ICabinetItem extends Document {
   timing?: string;
   brand?: string;
   notes?: string;
+  purpose?: string;
   active: boolean;
   startDate: Date;
   endDate?: Date;
@@ -79,6 +80,11 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
     notes: {
       type: String,
       trim: true,
+    },
+    purpose: {
+      type: String,
+      trim: true,
+      maxlength: 100,
     },
     active: {
       type: Boolean,

@@ -150,7 +150,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const { name, type, dosage, frequency, timing, brand, notes, active, startDate, endDate, source, price, currency } = req.body;
+  const { name, type, dosage, frequency, timing, brand, notes, purpose, active, startDate, endDate, source, price, currency } = req.body;
 
   if (!name || typeof name !== 'string' || name.trim() === '') {
     res.status(400).json({ success: false, data: null, error: 'name is required' });
@@ -172,6 +172,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     timing,
     brand,
     notes,
+    purpose: purpose ? String(purpose).trim().slice(0, 100) : undefined,
     active: active !== undefined ? active : true,
     startDate: startDate ? new Date(startDate) : new Date(),
     endDate: endDate ? new Date(endDate) : undefined,
@@ -284,7 +285,7 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'purpose', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
