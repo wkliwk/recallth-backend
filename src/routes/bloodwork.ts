@@ -1,6 +1,7 @@
-import { Router, Response } from 'express';
+import { Router, Response, Request } from 'express';
 import { Types } from 'mongoose';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import multer from 'multer';
 import { authenticate, AuthRequest } from '../middleware/auth';
 import { BloodworkEntry } from '../models/BloodworkEntry';
 import { CabinetItem } from '../models/CabinetItem';
@@ -8,6 +9,20 @@ import { HealthProfile } from '../models/HealthProfile';
 import { InsightCache } from '../models/InsightCache';
 import { MODELS } from '../config/models';
 import { buildAiUsage } from '../utils/aiUsage';
+
+// ─── Multer — memory storage, 10 MB limit, images only ───────────────────────
+const ocrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, and WebP images are supported'));
+    }
+  },
+});
 
 const router = Router();
 
@@ -434,21 +449,42 @@ Rules:
 });
 
 // POST /bloodwork/ocr — extract bloodwork markers from a lab report image
-router.post('/ocr', authenticate, async (req: AuthRequest, res: Response): Promise<void> => {
-  try {
-    const { image, mimeType } = req.body as { image?: unknown; mimeType?: unknown };
+// Accepts multipart/form-data with field `image` (JPEG/PNG/WebP, max 10 MB)
+router.post(
+  '/ocr',
+  authenticate,
+  (req: AuthRequest, res: Response, next: (err?: unknown) => void) => {
+    ocrUpload.single('image')(req as Request, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ markers: [], error: 'Image must be under 10 MB' });
+          return;
+        }
+        res.status(400).json({ markers: [], error: err.message });
+        return;
+      }
+      if (err instanceof Error) {
+        res.status(400).json({ markers: [], error: err.message });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
 
-    if (typeof image !== 'string' || !image.trim()) {
-      res.status(400).json({ success: false, data: null, error: '`image` (base64 string) is required' });
-      return;
-    }
+      if (!file) {
+        res.status(400).json({ markers: [], error: 'No image uploaded — send a JPEG/PNG/WebP file in the `image` field' });
+        return;
+      }
 
-    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-    const resolvedMime = typeof mimeType === 'string' && validTypes.includes(mimeType) ? mimeType : 'image/jpeg';
+      const imageBase64 = file.buffer.toString('base64');
+      const mimeType = file.mimetype as 'image/jpeg' | 'image/jpg' | 'image/png' | 'image/webp';
 
-    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+      const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
 
-    const prompt = `You are a medical lab report parser. Extract all bloodwork markers from this lab report image.
+      const prompt = `Extract all blood test marker names, values, and units from this lab report. Return as JSON array: [{name, value, unit}]. Only include numeric lab values.
 
 Return ONLY a valid JSON array (no markdown fences, no explanation):
 [
@@ -459,38 +495,50 @@ Return ONLY a valid JSON array (no markdown fences, no explanation):
 Rules:
 - Include every measurable marker visible in the image (e.g. Hemoglobin, Glucose, TSH, LDL, HDL, etc.)
 - "name" should be the standard English marker name (e.g. "Hemoglobin", "Fasting Glucose", "TSH")
-- "value" must be a numeric value
+- "value" must be a numeric value (not a string, not a range)
 - "unit" should be the unit shown (e.g. "g/dL", "mmol/L", "mIU/L", "mg/dL")
 - If no markers can be read, return an empty array: []
 - Do NOT include reference ranges or flags — only name, value, unit`;
 
-    const result = await model.generateContent([
-      { text: prompt },
-      { inlineData: { data: image, mimeType: resolvedMime } },
-    ]);
+      const result = await model.generateContent([
+        { text: prompt },
+        { inlineData: { data: imageBase64, mimeType } },
+      ]);
 
-    const raw = result.response.text().trim()
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
+      const usage = result.response.usageMetadata;
+      console.log(
+        `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=bloodwork-ocr`
+      );
 
-    let markers: Array<{ name: string; value: number; unit: string }> = [];
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        markers = parsed.filter(
-          (m) => typeof m?.name === 'string' && typeof m?.value === 'number' && typeof m?.unit === 'string'
-        );
+      const raw = result.response.text().trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
+
+      let markers: Array<{ name: string; value: number; unit: string }> = [];
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          markers = (parsed as unknown[]).filter(
+            (m): m is { name: string; value: number; unit: string } =>
+              typeof (m as Record<string, unknown>)?.name === 'string' &&
+              typeof (m as Record<string, unknown>)?.value === 'number' &&
+              typeof (m as Record<string, unknown>)?.unit === 'string'
+          );
+        }
+      } catch {
+        // Unparseable — return graceful fallback rather than 500
+        res.json({ markers: [], error: 'Could not extract values' });
+        return;
       }
-    } catch {
-      // Unparseable — return empty array rather than 500
-    }
 
-    res.json({ success: true, data: markers, error: null });
-  } catch (err) {
-    console.error('[POST /bloodwork/ocr]', err);
-    res.status(500).json({ success: false, data: null, error: 'OCR processing failed' });
+      res.json({ markers });
+    } catch (err) {
+      console.error('[POST /bloodwork/ocr]', err);
+      // Never surface AI errors as 500 — return graceful fallback
+      res.json({ markers: [], error: 'Could not extract values' });
+    }
   }
-});
+);
 
 export { router as bloodworkRouter };
