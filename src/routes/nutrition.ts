@@ -11,6 +11,7 @@ import { HealthProfile, ActivityLevel } from '../models/HealthProfile';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parseAiNutritionResponse } from '../utils/parseNutritionResponse';
 import { wholeFoodsLookup } from '../services/wholeFoodsRef';
+import { offLookup } from '../services/offLookup';
 import { contributeToCommDB } from '../services/communityContribution';
 import { FoodItem } from '../models/FoodItem';
 import { FoodImageCache } from '../models/FoodImageCache';
@@ -284,14 +285,13 @@ Input: "whey protein 1 scoop"
       }
     }
 
-    // Enrich foods: community DB → curated whole-foods table → AI estimate (parallel per item)
-    // OFF (OpenFoodFacts) removed: its text-search API returns unrelated products for food descriptions.
+    // Enrich foods: community DB → curated whole-foods table → OFF → AI estimate (parallel per item)
     type FoodItem = { name?: string; quantity?: number; unit?: string; grams?: number; nutrients?: Record<string, number>; estimated?: boolean; source?: string };
     const enrichedFoods = await Promise.all(
       (foods as FoodItem[]).map(async (item) => {
         if (!item.name || item.quantity == null || !item.unit) return { ...item, source: 'ai_estimated' };
 
-        // Skip community DB / whole-foods override for supplements in user's Cabinet.
+        // Skip community DB / whole-foods / OFF override for supplements in user's Cabinet.
         // The AI prompt already has accurate supplement reference data — community DB
         // entries for supplements often have wrong per100g values (e.g. whey liquid vs powder).
         const nameLC = item.name.toLowerCase();
@@ -358,6 +358,27 @@ Input: "whey protein 1 scoop"
             },
             estimated: false,
             source: 'reference',
+          };
+        }
+
+        // 3. Open Food Facts lookup (graceful fallback — never fails the request)
+        const offResult = await offLookup(item.name, item.quantity, item.unit);
+        console.log(`[enrich] "${item.name}" → OFF=${offResult ? 'HIT' : 'MISS'}`);
+        if (offResult) {
+          return {
+            ...item,
+            nutrients: {
+              calories: offResult.scaledNutrients.calories,
+              protein: offResult.scaledNutrients.protein,
+              carbs: offResult.scaledNutrients.carbs,
+              fat: offResult.scaledNutrients.fat,
+              sugar: offResult.scaledNutrients.sugar,
+              fiber: offResult.scaledNutrients.fiber,
+              sodium: offResult.scaledNutrients.sodium,
+            },
+            estimated: false,
+            source: 'off',
+            offProductName: offResult.productName,
           };
         }
 
