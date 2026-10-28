@@ -4,6 +4,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { adminAuth, AuthRequest } from '../middleware/auth';
 import { FoodItem, computeNutritionFlags } from '../models/FoodItem';
 import { MODELS } from '../config/models';
+import { safeFetch } from '../utils/safeFetch';
 
 const getGenAI = () => {
   const apiKey = process.env.GOOGLE_GEMINI_API_KEY;
@@ -14,16 +15,13 @@ const getGenAI = () => {
 /** Scrape og:image from a page URL. Returns null if not found or invalid. */
 async function scrapeImage(pageUrl: string): Promise<string | null> {
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 5000);
-    const res = await fetch(pageUrl, {
-      signal: ctrl.signal,
+    const res = await safeFetch(pageUrl, {
+      timeoutMs: 5000,
+      maxBytes: 1_500_000,
       headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html' },
-      redirect: 'follow',
     });
-    clearTimeout(t);
     if (!res.ok) return null;
-    const html = await res.text();
+    const html = res.text();
 
     let candidate: string | null = null;
     const og = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
@@ -37,25 +35,22 @@ async function scrapeImage(pageUrl: string): Promise<string | null> {
     if (candidate.startsWith('//')) candidate = `https:${candidate}`;
     candidate = candidate.replace(/^http:\/\//, 'https://');
 
-    // Validate: check first bytes are an image
-    const ctrl2 = new AbortController();
-    const t2 = setTimeout(() => ctrl2.abort(), 4000);
-    const val = await fetch(candidate, {
+    // Validate: check first bytes are an image (candidate comes from page HTML → SSRF-guarded fetch)
+    const val = await safeFetch(candidate, {
       method: 'GET',
-      signal: ctrl2.signal,
+      timeoutMs: 4000,
+      maxBytes: 16,
       headers: {
         'User-Agent': 'Mozilla/5.0',
         'Accept': 'image/*',
         'Referer': new URL(candidate).origin + '/',
         'Range': 'bytes=0-3',
       },
-      redirect: 'follow',
     });
-    clearTimeout(t2);
-    const ct = val.headers.get('content-type') || '';
+    const ct = val.headers['content-type'] || '';
     if (val.ok || val.status === 206) {
       if (ct.startsWith('image/')) return candidate;
-      const buf = Buffer.from(await val.arrayBuffer());
+      const buf = val.body;
       const isImg = (buf[0] === 0xFF && buf[1] === 0xD8) // JPEG
         || (buf[0] === 0x89 && buf[1] === 0x50)           // PNG
         || (buf[0] === 0x52 && buf[1] === 0x49)           // RIFF/WebP
@@ -299,23 +294,20 @@ If you cannot find reliable nutrition data, return { "error": "No nutrition data
 
     // Attempt 2: raw HTML context (fallback for Open Food Facts and other static pages)
     if (!data || data.error) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
       let html = '';
       let ogImage = '';
       try {
-        const pageRes = await fetch(url.trim(), {
-          signal: controller.signal,
+        const pageRes = await safeFetch(url.trim(), {
+          timeoutMs: 8000,
+          maxBytes: 1_500_000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml',
             'Accept-Language': 'en-US,en;q=0.9,zh;q=0.8',
           },
-          redirect: 'follow',
         });
-        clearTimeout(timer);
         if (pageRes.ok) {
-          html = await pageRes.text();
+          html = pageRes.text();
           const getMeta = (pattern: RegExp) => html.match(pattern)?.[1]?.trim() ?? '';
           ogImage = getMeta(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
                  || getMeta(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
@@ -370,7 +362,7 @@ Rules:
           data = parseJson(htmlResult.response.text());
         }
       } catch {
-        clearTimeout(timer);
+        // unreachable or blocked URL: continue with the grounding result only
       }
 
       // Attach og:image to grounding result if we managed to fetch HTML

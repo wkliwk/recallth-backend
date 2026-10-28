@@ -13,6 +13,8 @@ import { InsightCache } from '../models/InsightCache';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parsePurchaseFields } from '../utils/purchase';
 import { parseCabinetTextFields } from '../utils/cabinetText';
+import { safeFetch, UnsafeUrlError } from '../utils/safeFetch';
+import { resolveServableImageType } from '../utils/imageType';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -608,19 +610,16 @@ Rules:
     const scrapedImages: string[] = [];
     for (const redirectUrl of redirectUrls) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
-        const pageRes = await fetch(redirectUrl, {
-          signal: controller.signal,
+        const pageRes = await safeFetch(redirectUrl, {
+          timeoutMs: 5000,
+          maxBytes: 1_500_000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
             'Accept': 'text/html',
           },
-          redirect: 'follow',
         });
-        clearTimeout(timer);
         if (!pageRes.ok) continue;
-        const html = await pageRes.text();
+        const html = pageRes.text();
 
         let candidateUrl: string | null = null;
         const ogMatch = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
@@ -638,24 +637,22 @@ Rules:
         if (candidateUrl.startsWith('//')) candidateUrl = `https:${candidateUrl}`;
         candidateUrl = candidateUrl.replace(/^http:\/\//, 'https://');
 
-        // Validate with GET + Range to check real image bytes (not HTML error pages returning 200)
-        const ctrl2 = new AbortController();
-        const timer2 = setTimeout(() => ctrl2.abort(), 4000);
-        const valRes = await fetch(candidateUrl, {
-          signal: ctrl2.signal,
+        // Validate with GET + Range to check real image bytes (not HTML error pages returning 200).
+        // candidateUrl comes from page HTML, so it goes through the same SSRF guard.
+        const valRes = await safeFetch(candidateUrl, {
+          timeoutMs: 4000,
+          maxBytes: 16,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'image/*,*/*;q=0.8',
             'Referer': new URL(candidateUrl).origin + '/',
             'Range': 'bytes=0-3',
           },
-          redirect: 'follow',
         });
-        clearTimeout(timer2);
-        const ct = valRes.headers.get('content-type') || '';
+        const ct = valRes.headers['content-type'] || '';
         if (valRes.ok || valRes.status === 206) {
           // Check content-type OR first bytes for image magic numbers
-          const buf = Buffer.from(await valRes.arrayBuffer());
+          const buf = valRes.body;
           const isImage = ct.startsWith('image/')
             || (buf[0] === 0xFF && buf[1] === 0xD8) // JPEG
             || (buf[0] === 0x89 && buf[1] === 0x50) // PNG
@@ -757,28 +754,33 @@ router.post('/url-lookup', async (req: AuthRequest, res: Response): Promise<void
   }
 
   try {
-    // Fetch the page HTML
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    // Fetch the page HTML through the SSRF guard (public http(s) hosts only, capped size/time)
     let html = '';
     try {
-      const pageRes = await fetch(url.trim(), {
-        signal: controller.signal,
+      const pageRes = await safeFetch(url.trim(), {
+        timeoutMs: 8000,
+        maxBytes: 1_500_000,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml',
           'Accept-Language': 'en-US,en;q=0.9',
         },
-        redirect: 'follow',
       });
-      clearTimeout(timer);
       if (!pageRes.ok) {
         res.status(422).json({ success: false, data: null, error: `Could not fetch URL (${pageRes.status})` });
         return;
       }
-      html = await pageRes.text();
-    } catch {
-      clearTimeout(timer);
+      const ctype = (pageRes.headers['content-type'] || '').toLowerCase();
+      if (ctype && !ctype.includes('text/html') && !ctype.includes('application/xhtml')) {
+        res.status(422).json({ success: false, data: null, error: 'That link is not a web page' });
+        return;
+      }
+      html = pageRes.text();
+    } catch (err) {
+      if (err instanceof UnsafeUrlError) {
+        res.status(400).json({ success: false, data: null, error: 'That link is not allowed' });
+        return;
+      }
       res.status(422).json({ success: false, data: null, error: 'Could not reach URL' });
       return;
     }
@@ -2088,39 +2090,47 @@ Rules:
 export const imageProxyRouter = Router();
 
 imageProxyRouter.get('/image-proxy', async (req: Request, res: Response): Promise<void> => {
-  const url = req.query.url as string;
-  if (!url || !url.startsWith('https://')) {
+  const url = req.query.url;
+  if (typeof url !== 'string' || !url.startsWith('https://')) {
     res.status(400).json({ success: false, error: 'url query param required (https only)' });
     return;
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const upstream = await fetch(url, {
-      signal: controller.signal,
+    // Unauthenticated endpoint → strict guard: public hosts only, raster images only, 5 MB max.
+    const upstream = await safeFetch(url, {
+      timeoutMs: 8000,
+      maxBytes: 5 * 1024 * 1024,
+      onLimit: 'error',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': new URL(url).origin + '/',
       },
-      redirect: 'follow',
     });
-    clearTimeout(timer);
 
     if (!upstream.ok) {
       res.status(upstream.status === 404 ? 404 : 502).end();
       return;
     }
 
-    const ct = upstream.headers.get('content-type') || 'image/jpeg';
-    const buf = Buffer.from(await upstream.arrayBuffer());
+    const ct = resolveServableImageType(upstream.headers['content-type'], upstream.body);
+    if (!ct) {
+      res.status(415).end();
+      return;
+    }
     res.setHeader('Content-Type', ct);
-    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Content-Length', upstream.body.length);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('Cache-Control', 'public, max-age=86400');
-    res.end(buf);
-  } catch {
+    res.end(upstream.body);
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      res.status(400).json({ success: false, error: 'That image address is not allowed' });
+      return;
+    }
     res.status(502).end();
   }
 });
