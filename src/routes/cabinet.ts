@@ -11,6 +11,7 @@ import { HealthProfile } from '../models/HealthProfile';
 import { MODELS } from '../config/models';
 import { InsightCache } from '../models/InsightCache';
 import { buildAiUsage } from '../utils/aiUsage';
+import { parsePurchaseFields } from '../utils/purchase';
 import { getCached, setCached } from '../models/AiCache';
 
 async function resolveScopedUserId(
@@ -163,6 +164,12 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
+  const purchase = parsePurchaseFields(req.body);
+  if (!purchase.ok) {
+    res.status(400).json({ success: false, data: null, error: purchase.error });
+    return;
+  }
+
   const item = await CabinetItem.create({
     userId: scopedUserId,
     name: name.trim(),
@@ -179,6 +186,8 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     source: source || 'user_input',
     price: price !== undefined ? Number(price) : undefined,
     currency: currency || 'HKD',
+    ...(purchase.value.purchasePrice != null ? { purchasePrice: purchase.value.purchasePrice } : {}),
+    ...(purchase.value.purchaseDate != null ? { purchaseDate: purchase.value.purchaseDate } : {}),
   });
 
   res.status(201).json({
@@ -287,11 +296,17 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
-  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'purpose', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock', 'pausedUntil'] as const;
+  const allowedFields = ['name', 'type', 'dosage', 'frequency', 'timing', 'brand', 'notes', 'purpose', 'active', 'startDate', 'endDate', 'source', 'price', 'currency', 'purchasePrice', 'purchaseDate', 'quantityRemaining', 'dailyDoseCount', 'restockThresholdDays', 'description', 'ingredients', 'imageUrl', 'outOfStock', 'pausedUntil'] as const;
   type AllowedField = typeof allowedFields[number];
 
   const validTypes: CabinetItemType[] = ['supplement', 'medication', 'vitamin'];
   const updates: Partial<Record<AllowedField, unknown>> = {};
+
+  const purchase = parsePurchaseFields(req.body);
+  if (!purchase.ok) {
+    res.status(400).json({ success: false, data: null, error: purchase.error });
+    return;
+  }
 
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
@@ -306,6 +321,10 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
       if (field === 'name' && (typeof req.body[field] !== 'string' || req.body[field].trim() === '')) {
         res.status(400).json({ success: false, data: null, error: 'name cannot be empty' });
         return;
+      }
+      if (field === 'purchasePrice' || field === 'purchaseDate') {
+        updates[field] = purchase.value[field]; // validated; null clears
+        continue;
       }
       if ((field === 'startDate' || field === 'endDate') && req.body[field] !== null) {
         updates[field] = new Date(req.body[field] as string);

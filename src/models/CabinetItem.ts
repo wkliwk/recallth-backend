@@ -27,6 +27,8 @@ export interface ICabinetItem extends Document {
   source: CabinetItemSource;
   price?: number;
   currency?: string;
+  purchasePrice?: number;
+  purchaseDate?: Date;
   description?: string;
   ingredients?: string;
   imageUrl?: string;
@@ -111,6 +113,13 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
       type: String,
       trim: true,
       default: 'HKD',
+    },
+    purchasePrice: {
+      type: Number,
+      min: 0,
+    },
+    purchaseDate: {
+      type: Date,
     },
     description: {
       type: String,
