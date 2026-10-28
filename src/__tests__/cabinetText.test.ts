@@ -1,4 +1,4 @@
-import { parseCabinetTextFields, MAX_TEXT_LENGTH } from '../utils/cabinetText';
+import { parseCabinetTextFields, MAX_TEXT_LENGTH, MAX_DATA_URL_LENGTH } from '../utils/cabinetText';
 
 describe('parseCabinetTextFields', () => {
   it('returns nothing when the fields are absent, null or blank', () => {
@@ -35,5 +35,13 @@ describe('parseCabinetTextFields', () => {
     const r = parseCabinetTextFields({ ingredients: 'x'.repeat(MAX_TEXT_LENGTH + 500) });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.ingredients).toHaveLength(MAX_TEXT_LENGTH);
+  });
+
+  it('accepts a small data:image thumbnail and rejects an oversized one', () => {
+    const small = `data:image/jpeg;base64,${'A'.repeat(30_000)}`;
+    expect(parseCabinetTextFields({ imageUrl: small }).ok).toBe(true);
+    const big = `data:image/jpeg;base64,${'A'.repeat(MAX_DATA_URL_LENGTH)}`;
+    const r = parseCabinetTextFields({ imageUrl: big });
+    expect(r.ok).toBe(false);
   });
 });

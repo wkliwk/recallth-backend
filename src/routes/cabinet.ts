@@ -15,6 +15,7 @@ import { parsePurchaseFields } from '../utils/purchase';
 import { parseCabinetTextFields } from '../utils/cabinetText';
 import { safeFetch, UnsafeUrlError } from '../utils/safeFetch';
 import { resolveServableImageType } from '../utils/imageType';
+import { rewrapImageUrl } from '../utils/imageUrl';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -269,12 +270,7 @@ router.get('/', async (req: AuthRequest, res: Response): Promise<void> => {
       daysSupplyRemaining = Math.floor(item.quantityRemaining / item.dailyDoseCount);
       lowSupplyWarning = daysSupplyRemaining <= threshold;
     }
-    let imageUrl = item.imageUrl as string | undefined;
-    if (imageUrl) {
-      const proxyMatch = imageUrl.match(/\/img\/image-proxy\?url=(.+)$/);
-      const rawImageUrl = proxyMatch ? decodeURIComponent(proxyMatch[1]) : imageUrl;
-      imageUrl = `${currentBaseUrl}/img/image-proxy?url=${encodeURIComponent(rawImageUrl)}`;
-    }
+    const imageUrl = rewrapImageUrl(item.imageUrl as string | undefined, currentBaseUrl);
     const now = new Date();
     const isPaused = item.pausedUntil != null && item.pausedUntil > now;
     return { ...item, daysSupplyRemaining, lowSupplyWarning, imageUrl, isPaused };
