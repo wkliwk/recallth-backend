@@ -12,6 +12,7 @@ import { MODELS } from '../config/models';
 import { InsightCache } from '../models/InsightCache';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parsePurchaseFields } from '../utils/purchase';
+import { parseCabinetTextFields } from '../utils/cabinetText';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -171,6 +172,12 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
+  const text = parseCabinetTextFields(req.body);
+  if (!text.ok) {
+    res.status(400).json({ success: false, data: null, error: text.error });
+    return;
+  }
+
   const item = await CabinetItem.create({
     userId: scopedUserId,
     name: name.trim(),
@@ -189,6 +196,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     currency: currency || 'HKD',
     ...(purchase.value.purchasePrice != null ? { purchasePrice: purchase.value.purchasePrice } : {}),
     ...(purchase.value.purchaseDate != null ? { purchaseDate: purchase.value.purchaseDate } : {}),
+    ...text.value,
   });
 
   res.status(201).json({

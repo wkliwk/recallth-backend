@@ -85,6 +85,43 @@ describe('POST /cabinet purchase fields', () => {
   });
 });
 
+describe('POST /cabinet description / ingredients / imageUrl', () => {
+  it('persists them when provided (trimmed)', async () => {
+    const res = await request(app)
+      .post('/cabinet')
+      .send({ ...baseBody, ingredients: ' Curcumin 500 mg ', description: 'Joint support', imageUrl: 'https://x.test/a.png' });
+    expect(res.status).toBe(201);
+    const doc = mockCreate.mock.calls[0][0];
+    expect(doc.ingredients).toBe('Curcumin 500 mg');
+    expect(doc.description).toBe('Joint support');
+    expect(doc.imageUrl).toBe('https://x.test/a.png');
+    expect(res.body.data.ingredients).toBe('Curcumin 500 mg');
+  });
+
+  it('leaves them out when absent or blank', async () => {
+    const res = await request(app).post('/cabinet').send({ ...baseBody, ingredients: '  ', description: '' });
+    expect(res.status).toBe(201);
+    const doc = mockCreate.mock.calls[0][0];
+    for (const k of ['ingredients', 'description', 'imageUrl']) expect(k in doc).toBe(false);
+  });
+
+  it('rejects non-string values and bad image URLs with 400', async () => {
+    const a = await request(app).post('/cabinet').send({ ...baseBody, ingredients: 123 });
+    const b = await request(app).post('/cabinet').send({ ...baseBody, imageUrl: 'javascript:alert(1)' });
+    expect(a.status).toBe(400);
+    expect(b.status).toBe(400);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it('still persists the purchase fields alongside', async () => {
+    await request(app).post('/cabinet').send({ ...baseBody, ingredients: 'x', purchasePrice: 5, currency: 'CAD' });
+    const doc = mockCreate.mock.calls[0][0];
+    expect(doc.ingredients).toBe('x');
+    expect(doc.purchasePrice).toBe(5);
+    expect(doc.currency).toBe('CAD');
+  });
+});
+
 describe('PUT /cabinet/:id purchase fields', () => {
   beforeEach(() => {
     mockFindById.mockResolvedValue({ userId: { toString: () => USER_ID }, name: 'Zinc', type: 'vitamin' });
