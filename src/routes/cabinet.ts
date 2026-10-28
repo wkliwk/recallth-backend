@@ -12,6 +12,7 @@ import { MODELS } from '../config/models';
 import { InsightCache } from '../models/InsightCache';
 import { buildAiUsage } from '../utils/aiUsage';
 import { parsePurchaseFields } from '../utils/purchase';
+import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
 async function resolveScopedUserId(
@@ -537,6 +538,10 @@ Return ONLY a valid JSON array (no markdown fences):
     "brand": string | null,    // brand name (e.g. "PVL", "ON", "NOW Foods")
     "type": "supplement" | "medication" | "vitamin",
     "dosage": string | null,   // recommended serving size (e.g. "1 scoop (33g)", "2 capsules")
+    "strength": string | null, // amount of active ingredient PER UNIT (e.g. "500 mg" per capsule)
+    "unitForm": "capsule" | "tablet" | "softgel" | "gummy" | "scoop" | "drop" | "other" | null,
+    "servingUnits": number | null, // how many units per dose according to the manufacturer's directions; null if you cannot find it — never assume 1
+    "directions": string | null,   // the directions text servingUnits came from (e.g. "Adults: take 2 capsules daily with food"), null if not found
     "frequency": string | null, // recommended frequency (e.g. "Daily", "Post-workout")
     "timing": string | null,    // best time to take (e.g. "Post-workout", "Morning", "With meals")
     "description": string,      // 1-2 sentences describing the product
@@ -552,6 +557,7 @@ Rules:
 - For dosage, use the standard recommended serving from the product label
 - ingredients should list the main active compounds, not all inactive fillers
 - For imageUrl: return null (images will be resolved separately)
+- servingUnits/directions: only from the manufacturer's directions for THIS exact product and pack; if different pack sizes or products disagree, return null
 - Return exactly 3 results`;
 
     const model = getGenAI().getGenerativeModel({
@@ -572,7 +578,11 @@ Rules:
     let products: Record<string, unknown>[];
     try {
       const parsed = JSON.parse(cleaned);
-      products = Array.isArray(parsed) ? parsed : [parsed];
+      products = (Array.isArray(parsed) ? parsed : [parsed]).map((p: Record<string, unknown>) => ({
+        ...p,
+        ...normalizeDoseFields(p),
+        directions: typeof p.directions === 'string' && p.directions.trim() ? p.directions.trim().slice(0, 300) : null,
+      }));
     } catch {
       res.status(422).json({ success: false, data: null, error: 'Could not parse product info' });
       return;
@@ -887,15 +897,20 @@ router.post('/scan', async (req: AuthRequest, res: Response): Promise<void> => {
 
 Extract:
 {
-  "name": string,         // product name (e.g. "Magnesium Glycinate")
-  "brand": string | null, // brand/manufacturer (e.g. "NOW Foods")
-  "type": string,         // one of: "supplement", "medication", "vitamin"
-  "dosage": string | null,// dosage per serving (e.g. "400mg", "2 capsules")
-  "servingSize": string | null, // serving size if different from dosage
+  "name": string,               // product name (e.g. "Magnesium Glycinate")
+  "brand": string | null,       // brand/manufacturer (e.g. "NOW Foods")
+  "type": string,               // one of: "supplement", "medication", "vitamin"
+  "strength": string | null,    // amount of active ingredient PER UNIT as printed, e.g. "500 mg", "1000 IU", "25 mcg"
+  "unitForm": string | null,    // one of: "capsule", "tablet", "softgel", "gummy", "scoop", "drop", "other"
+  "servingUnits": number | null,// how many units to take per dose/serving — ONLY if the label's directions / supplement facts explicitly say so (e.g. "Take 2 capsules daily", "Serving size: 2 capsules")
+  "bottleCount": number | null, // how many units are in the bottle (e.g. "120 capsules" -> 120)
   "ingredients": string | null  // key active ingredients, comma separated
 }
 
 Rules:
+- "strength" is per capsule/tablet/etc. It is NOT how many to take and NOT the bottle count.
+- "servingUnits" must be null unless the label text itself states how many to take. Front-of-bottle photos usually do not — then it MUST be null. Never assume 1.
+- "bottleCount" is the number of units in the container, never the serving size.
 - If you cannot read the label clearly, extract what you can and set unclear fields to null
 - "type" must be one of the three values above — default to "supplement" if unsure
 - Do not invent values — only extract what is visibly on the label
@@ -923,7 +938,18 @@ Rules:
       return;
     }
 
-    res.json({ success: true, error: null, data: extracted, aiUsage });
+    const dose = normalizeDoseFields(extracted);
+    const data = {
+      name: extracted.name,
+      brand: extracted.brand ?? null,
+      type: extracted.type,
+      ingredients: extracted.ingredients ?? null,
+      ...dose,
+      // Back-compat for older clients: "N unit(s) (strength each)" when the count is known, else the strength.
+      dosage: composeLegacyDosage(dose, extracted.dosage),
+    };
+
+    res.json({ success: true, error: null, data, aiUsage });
   } catch (err) {
     console.error('[POST /cabinet/scan]', err);
     res.status(500).json({ success: false, data: null, error: 'Scan failed' });
