@@ -1,4 +1,6 @@
 export const MAX_TEXT_LENGTH = 2000;
+/** A data:image URL is a small thumbnail (tens of KB); anything bigger is refused. */
+export const MAX_DATA_URL_LENGTH = 400_000;
 
 export interface CabinetTextFields {
   description?: string;
@@ -32,6 +34,9 @@ export function parseCabinetTextFields(body: Record<string, unknown> | undefined
     if (field === 'imageUrl') {
       if (!/^(https?:\/\/|data:image\/)/i.test(trimmed)) {
         return { ok: false, error: 'imageUrl must be an http(s) URL or a data:image URL' };
+      }
+      if (/^data:image\//i.test(trimmed) && trimmed.length > MAX_DATA_URL_LENGTH) {
+        return { ok: false, error: 'imageUrl image is too large' };
       }
       value.imageUrl = trimmed;
     } else {
