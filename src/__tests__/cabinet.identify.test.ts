@@ -15,6 +15,9 @@ jest.mock('../models/AiCache', () => ({
   deleteCached: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockFindProductImage = jest.fn();
+jest.mock('../utils/pageImage', () => ({ findProductImage: (...a: unknown[]) => mockFindProductImage(...a) }));
+
 import cabinetRouter from '../routes/cabinet';
 
 const app = express();
@@ -38,6 +41,7 @@ const good = {
 beforeEach(() => {
   jest.clearAllMocks();
   process.env.GOOGLE_GEMINI_API_KEY = 'test-gemini-key';
+  mockFindProductImage.mockResolvedValue(null);
 });
 
 describe('POST /cabinet/identify', () => {
@@ -96,5 +100,27 @@ describe('POST /cabinet/identify', () => {
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
     expect(res.status).toBe(200);
     expect(res.body.data.usable).toBe(true);
+  });
+
+  it('adds the product image from the source page, wrapped through this host\'s image proxy', async () => {
+    mockGenerateContent.mockResolvedValue(gemini(good));
+    mockFindProductImage.mockResolvedValue('https://cdn.example.com/hyalein.jpg');
+    const res = await request(app).post('/cabinet/identify').set('Host', 'api.test').set('X-Forwarded-Proto', 'https').send({ imageBase64: 'AAAA' });
+    expect(mockFindProductImage).toHaveBeenCalledWith('https://example.com/hyalein');
+    expect(res.body.data.imageUrl).toBe(`https://api.test/img/image-proxy?url=${encodeURIComponent('https://cdn.example.com/hyalein.jpg')}`);
+  });
+
+  it('imageUrl is null when no image is found; the request still succeeds', async () => {
+    mockGenerateContent.mockResolvedValue(gemini(good));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.imageUrl).toBeNull();
+  });
+
+  it('does not look for an image when the match is not usable', async () => {
+    mockGenerateContent.mockResolvedValue(gemini({ ...good, match: 'unsure' }));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(mockFindProductImage).not.toHaveBeenCalled();
+    expect(res.body.data.imageUrl).toBeNull();
   });
 });

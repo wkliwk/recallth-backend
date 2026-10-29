@@ -17,6 +17,7 @@ import { safeFetch, UnsafeUrlError } from '../utils/safeFetch';
 import { resolveServableImageType } from '../utils/imageType';
 import { rewrapImageUrl } from '../utils/imageUrl';
 import { normalizeIdentify } from '../utils/identify';
+import { findProductImage } from '../utils/pageImage';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -1046,7 +1047,20 @@ Rules:
       return;
     }
 
-    res.json({ success: true, error: null, data: normalizeIdentify(parsed), aiUsage });
+    const identified = normalizeIdentify(parsed);
+
+    // Best-effort product picture from the page the model used (bounded; never fails the request).
+    let imageUrl: string | null = null;
+    if (identified.usable && identified.sourceUrl) {
+      // Overall budget so a slow page can never hold the response for long.
+      const raw = await Promise.race<string | null>([findProductImage(identified.sourceUrl), new Promise((resolve) => setTimeout(() => resolve(null), 6000))]);
+      if (raw) {
+        const proto = req.get('x-forwarded-proto') || req.protocol;
+        imageUrl = `${proto}://${req.get('host')}/img/image-proxy?url=${encodeURIComponent(raw)}`;
+      }
+    }
+
+    res.json({ success: true, error: null, data: { ...identified, imageUrl }, aiUsage });
   } catch (err) {
     console.error('[POST /cabinet/identify]', err);
     res.status(500).json({ success: false, data: null, error: 'Identify failed' });
