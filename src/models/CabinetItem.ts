@@ -29,6 +29,7 @@ export interface ICabinetItem extends Document {
   currency?: string;
   purchasePrice?: number;
   purchaseDate?: Date;
+  references?: Array<{ url: string; title?: string; kind?: 'official' | 'database' | 'retailer' | 'other' }>;
   description?: string;
   ingredients?: string;
   imageUrl?: string;
@@ -120,6 +121,20 @@ const CabinetItemSchema = new Schema<ICabinetItem>(
     },
     purchaseDate: {
       type: Date,
+    },
+    // Pages used to identify the product (official site first); see utils/references.ts
+    references: {
+      type: [
+        new Schema(
+          {
+            url: { type: String, required: true, trim: true, maxlength: 2000 },
+            title: { type: String, trim: true, maxlength: 200 },
+            kind: { type: String, enum: ['official', 'database', 'retailer', 'other'], default: 'other' },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
     },
     description: {
       type: String,

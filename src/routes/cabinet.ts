@@ -17,7 +17,8 @@ import { safeFetch, UnsafeUrlError } from '../utils/safeFetch';
 import { resolveServableImageType } from '../utils/imageType';
 import { rewrapImageUrl } from '../utils/imageUrl';
 import { normalizeIdentify } from '../utils/identify';
-import { findProductImage } from '../utils/pageImage';
+import { pickProductImage, ImageChooser } from '../utils/pageImage';
+import { parseReferences, buildReferences, Reference } from '../utils/references';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -183,6 +184,12 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
+  const refs = req.body.references === undefined || req.body.references === null ? null : parseReferences(req.body.references);
+  if (refs && !refs.ok) {
+    res.status(400).json({ success: false, data: null, error: refs.error });
+    return;
+  }
+
   const item = await CabinetItem.create({
     userId: scopedUserId,
     name: name.trim(),
@@ -202,6 +209,7 @@ router.post('/', async (req: AuthRequest, res: Response): Promise<void> => {
     ...(purchase.value.purchasePrice != null ? { purchasePrice: purchase.value.purchasePrice } : {}),
     ...(purchase.value.purchaseDate != null ? { purchaseDate: purchase.value.purchaseDate } : {}),
     ...text.value,
+    ...(refs && refs.ok && refs.value.length > 0 ? { references: refs.value } : {}),
   });
 
   res.status(201).json({
@@ -317,6 +325,13 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
     return;
   }
 
+  // references: [] / null clears; an array replaces the list
+  const refs = req.body.references === undefined ? null : req.body.references === null ? { ok: true as const, value: [] } : parseReferences(req.body.references);
+  if (refs && !refs.ok) {
+    res.status(400).json({ success: false, data: null, error: refs.error });
+    return;
+  }
+
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
       if (field === 'type' && !validTypes.includes(req.body[field])) {
@@ -342,6 +357,8 @@ router.put('/:id', async (req: AuthRequest, res: Response): Promise<void> => {
       }
     }
   }
+
+  if (refs && refs.ok) (updates as Record<string, unknown>).references = refs.value;
 
   const nameChanged = updates.name !== undefined && updates.name !== item.name;
   const updated = await CabinetItem.findByIdAndUpdate(id, { $set: updates }, { new: true, runValidators: true });
@@ -1025,6 +1042,7 @@ Rules:
 - servingUnits is per DOSE, never the daily total. "1 capsule with breakfast, 1 with lunch and 1 with dinner" = servingUnits 1, timesPerDay 3.
 - If the directions give a range ("1-3 capsules"), servingUnits = null.
 - Never assume 1. If you cannot find a page for this exact product, set match "unsure" and servingUnits null.
+- Sources: prefer the manufacturer's official website; then major reputable retailers (e.g. Costco, iHerb, Shoppers Drug Mart, Walmart, Amazon brand stores) and official / regulatory databases (e.g. Health Canada LNHPD, DailyMed, FDA, Japan MHLW). Avoid blogs, affiliate or review sites, forums and user-generated listings for ingredients, directions and descriptions. "sourceUrl" must be the most reliable page you used.
 - ingredients: if the ingredients / Supplement Facts panel is visible in the photo, read it from the photo; otherwise take it from the page you cited. Transcribe faithfully, do not write it from memory or from general knowledge; if you cannot find it, null. Keep amounts and units exactly as printed.
 - description: use the manufacturer's wording, not your own marketing; null if not found.
 - Only claim "exact" if the page is for this product and pack size; use "likely" for the same product in a different pack size or a close variant.`;
@@ -1039,6 +1057,7 @@ Rules:
     let parsed: Record<string, unknown> | undefined;
     let aiUsage: ReturnType<typeof buildAiUsage> | undefined;
     let lastErr: unknown;
+    let chunks: Array<{ uri?: string; title?: string }> = [];
     for (const p of [prompt, prompt, corePrompt]) {
       try {
         const result = await model.generateContent([p, { inlineData: { mimeType: resolvedMime, data: imageBase64 } }]);
@@ -1047,10 +1066,12 @@ Rules:
           `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=identify-photo`
         );
         aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+        const gm = (result.response.candidates?.[0] as any)?.groundingMetadata;
         const text = result.response.text().trim();
         const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
         try {
           parsed = JSON.parse(cleaned) as Record<string, unknown>;
+          chunks = ((gm?.groundingChunks ?? []) as Array<{ web?: { uri?: string; title?: string } }>).map((c) => ({ uri: c.web?.uri, title: c.web?.title }));
           break;
         } catch {
           lastErr = undefined;
@@ -1070,21 +1091,86 @@ Rules:
 
     const identified = normalizeIdentify(parsed);
 
-    // Best-effort product picture from the page the model used (bounded; never fails the request).
-    let imageUrl: string | null = null;
-    if (identified.usable && identified.sourceUrl) {
-      // Overall budget so a slow page can never hold the response for long.
-      const raw = await Promise.race<string | null>([findProductImage(identified.sourceUrl), new Promise((resolve) => setTimeout(() => resolve(null), 6000))]);
-      if (raw) {
-        const proto = req.get('x-forwarded-proto') || req.protocol;
-        imageUrl = `${proto}://${req.get('host')}/img/image-proxy?url=${encodeURIComponent(raw)}`;
-      }
+    // Reference links: the cited page + the pages grounding consulted, resolved to their final URLs, classified by how
+    // reliable the source is (official site first) and sorted. Bounded; never fails the request.
+    let references: Reference[] = [];
+    if (identified.usable) {
+      references = await Promise.race<Reference[]>([
+        buildReferences({ sourceUrl: identified.sourceUrl, chunks, brand: identified.brand }),
+        new Promise<Reference[]>((resolve) => setTimeout(() => resolve([]), 5000)),
+      ]);
+      if (references.length === 0 && identified.sourceUrl) references = [{ url: identified.sourceUrl, title: 'Source', kind: 'other' }];
     }
 
-    res.json({ success: true, error: null, data: { ...identified, imageUrl }, aiUsage });
+    res.json({ success: true, error: null, data: { ...identified, references }, aiUsage });
   } catch (err) {
     console.error('[POST /cabinet/identify]', err);
     res.status(500).json({ success: false, data: null, error: 'Identify failed' });
+  }
+});
+
+// Vision model that picks the best candidate picture (or none) by comparing with the user's own photo.
+const geminiImageChooser: ImageChooser = async (photo, candidates, hint) => {
+  const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
+  const named = [hint.brand, hint.name].filter(Boolean).join(' ').slice(0, 160);
+  const parts: Array<string | { inlineData: { mimeType: string; data: string } }> = [
+    `Image A is the user's own photo of a product package${named ? ` (read as: ${named})` : ''}. The images B1..B${candidates.length} below are candidate pictures taken from web pages about the product. Choose the ONE candidate that best shows the FRONT of the SAME product as image A (same brand, product name, variant / flavour / strength): clear, in focus, uncropped, ideally a clean packshot on a plain background.
+Reject a candidate if it is a logo, banner, lifestyle or ambient photo, the back or side label, a nutrition-facts-only image, several products together, a different variant or pack size, or low quality.
+Return ONLY JSON: {"best": <1-based index of the best candidate, or null if none qualifies>}. Prefer null over a wrong match.`,
+    'Image A:',
+    { inlineData: { mimeType: photo.mime, data: photo.base64 } },
+  ];
+  candidates.forEach((c, i) => {
+    parts.push(`B${i + 1}:`);
+    parts.push({ inlineData: { mimeType: c.mime, data: c.base64 } });
+  });
+  const result = await model.generateContent(parts);
+  const usage = result.response.usageMetadata;
+  console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=product-image`);
+  const text = result.response.text().trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const best = (JSON.parse(text) as { best?: unknown }).best;
+  return typeof best === 'number' && Number.isInteger(best) && best >= 1 && best <= candidates.length ? best - 1 : null;
+};
+
+// POST /cabinet/product-image — a clear front-facing picture of the product from its reference pages, verified by a
+// vision model against the user's photo. Returns { imageUrl } or { imageUrl: null }; never fails the client flow.
+router.post('/product-image', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { imageBase64, mimeType, pageUrls, name, brand } = req.body as {
+    imageBase64?: string;
+    mimeType?: string;
+    pageUrls?: unknown;
+    name?: unknown;
+    brand?: unknown;
+  };
+
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    res.status(400).json({ success: false, data: null, error: 'imageBase64 is required' });
+    return;
+  }
+  if (!Array.isArray(pageUrls) || pageUrls.length === 0 || pageUrls.length > 4 || pageUrls.some((u) => typeof u !== 'string' || !/^https?:\/\//i.test(u) || u.length > 2000)) {
+    res.status(400).json({ success: false, data: null, error: 'pageUrls must be 1-4 http(s) URLs' });
+    return;
+  }
+  const validMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+  const resolvedMime = (mimeType && validMimeTypes.includes(mimeType)) ? mimeType : 'image/jpeg';
+
+  try {
+    const picked = await Promise.race<string | null>([
+      pickProductImage(
+        { pageUrls: pageUrls as string[], photo: { base64: imageBase64, mime: resolvedMime }, name: typeof name === 'string' ? name : undefined, brand: typeof brand === 'string' ? brand : undefined },
+        { chooser: geminiImageChooser },
+      ),
+      new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 14000)),
+    ]);
+    let imageUrl: string | null = null;
+    if (picked) {
+      const proto = req.get('x-forwarded-proto') || req.protocol;
+      imageUrl = `${proto}://${req.get('host')}/img/image-proxy?url=${encodeURIComponent(picked)}`;
+    }
+    res.json({ success: true, error: null, data: { imageUrl } });
+  } catch (err) {
+    console.error('[POST /cabinet/product-image]', err);
+    res.json({ success: true, error: null, data: { imageUrl: null } });
   }
 });
 

@@ -1,13 +1,28 @@
 /**
- * Find a product's picture on its page (best effort, SSRF-guarded): og:image / twitter:image / JSON-LD / image_src,
- * verified to really be a raster image. Used by /cabinet/identify with the page the model cited as its source.
+ * Find a clear, front-facing picture of a product on the web (best effort, SSRF-guarded).
+ *
+ * Candidates are gathered from the product's reference pages (official site first) and then judged by a vision
+ * model against the user's own photo: only the FRONT of the SAME product, clear and uncropped, is accepted — logos,
+ * banners, lifestyle shots, back labels, multi-product shots and other variants are rejected. None → null, and the
+ * app falls back to the user's own photo.
  */
 import { safeFetch as defaultSafeFetch, SafeResponse } from './safeFetch';
 import { sniffImageType } from './imageType';
 
 type Fetcher = (url: string, opts?: Record<string, unknown>) => Promise<SafeResponse>;
 
+export interface ImageCandidate {
+  url: string;
+  mime: string;
+  base64: string;
+}
+
+/** Chooses the best candidate (0-based index) or null. Injected so tests do not need a model. */
+export type ImageChooser = (photo: { base64: string; mime: string }, candidates: ImageCandidate[], hint: { name?: string; brand?: string }) => Promise<number | null>;
+
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// Formats the vision model accepts (no AVIF / GIF).
+const VISION_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 function meta(html: string, attr: 'property' | 'name', key: string): string[] {
   const out: string[] = [];
@@ -54,17 +69,20 @@ function ldProductImages(html: string): string[] {
 }
 
 /**
- * Trusted product-image candidates, in priority order, resolved against the page URL, https only, deduplicated.
- * Trusted = a schema.org Product's image, or an og:image on a page that declares og:type "product".
- * A bare og:image is NOT used: on manufacturer sites it is usually a site-wide banner or logo, and a wrong
- * picture is worse than none (the app then falls back to the user's own photo).
+ * Candidate image URLs from one page, best-first: schema.org Product images, then og:image, twitter:image and
+ * image_src. Anything goes in here — a vision model judges them afterwards — but only https, resolved against the
+ * page URL and deduplicated.
  */
 export function extractImageCandidates(html: string, baseUrl: string): string[] {
-  const ogType = meta(html, 'property', 'og:type').join(' ').toLowerCase();
-  const raw = [...ldProductImages(html)];
-  if (ogType.includes('product')) {
-    raw.push(...meta(html, 'property', 'og:image:secure_url'), ...meta(html, 'property', 'og:image'));
-  }
+  const raw = [
+    ...ldProductImages(html),
+    ...meta(html, 'property', 'og:image:secure_url'),
+    ...meta(html, 'property', 'og:image'),
+    ...meta(html, 'name', 'twitter:image'),
+    ...meta(html, 'property', 'twitter:image'),
+  ];
+  const link = html.match(/<link[^>]+rel=["']image_src["'][^>]*href=["']([^"']+)["']/i);
+  if (link) raw.push(link[1]);
 
   const seen = new Set<string>();
   const out: string[] = [];
@@ -86,34 +104,69 @@ export function extractImageCandidates(html: string, baseUrl: string): string[] 
   return out;
 }
 
-export async function findProductImage(
-  pageUrl: string,
-  deps: { safeFetch?: Fetcher; maxCandidates?: number } = {},
+export interface PickOptions {
+  pageUrls: string[];
+  photo: { base64: string; mime: string };
+  name?: string;
+  brand?: string;
+}
+
+export async function pickProductImage(
+  opts: PickOptions,
+  deps: { safeFetch?: Fetcher; chooser: ImageChooser; maxPages?: number; perPage?: number; maxCandidates?: number },
 ): Promise<string | null> {
   const fetcher = deps.safeFetch ?? (defaultSafeFetch as unknown as Fetcher);
-  const maxCandidates = deps.maxCandidates ?? 2;
+  const maxPages = deps.maxPages ?? 4;
+  const perPage = deps.perPage ?? 3;
+  const maxCandidates = deps.maxCandidates ?? 6;
+
   try {
-    const page = await fetcher(pageUrl, {
-      timeoutMs: 3500,
-      maxBytes: 1_200_000,
-      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' },
-    });
-    if (!page.ok) return null;
-    const candidates = extractImageCandidates(page.text(), page.url || pageUrl).slice(0, maxCandidates);
-    for (const url of candidates) {
-      try {
-        const img = await fetcher(url, {
-          timeoutMs: 2000,
-          maxBytes: 32,
-          headers: { 'User-Agent': UA, Accept: 'image/avif,image/webp,image/*;q=0.8', Referer: new URL(page.url || pageUrl).origin + '/', Range: 'bytes=0-31' },
-        });
-        if ((img.ok || img.status === 206) && sniffImageType(img.body)) return url;
-      } catch {
-        /* try the next candidate */
+    // 1. pages (in the given order = most reliable source first), fetched in parallel
+    const pages = await Promise.all(
+      opts.pageUrls.slice(0, maxPages).map(async (url) => {
+        try {
+          const res = await fetcher(url, { timeoutMs: 3500, maxBytes: 1_200_000, headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' } });
+          return res.ok ? extractImageCandidates(res.text(), res.url || url).slice(0, perPage) : [];
+        } catch {
+          return [];
+        }
+      }),
+    );
+
+    // 2. interleave so every page gets a chance, official page's images first
+    const urls: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < perPage; i++) {
+      for (const list of pages) {
+        const u = list[i];
+        if (u && !seen.has(u)) {
+          seen.add(u);
+          urls.push(u);
+        }
       }
     }
+
+    // 3. download + byte-verify (raster formats the vision model understands), in parallel
+    const downloaded = await Promise.all(
+      urls.slice(0, maxCandidates + 2).map(async (url): Promise<ImageCandidate | null> => {
+        try {
+          const img = await fetcher(url, { timeoutMs: 2500, maxBytes: 700_000, onLimit: 'error', headers: { 'User-Agent': UA, Accept: 'image/webp,image/jpeg,image/png;q=0.9,*/*;q=0.5', Referer: new URL(url).origin + '/' } });
+          if (!img.ok) return null;
+          const mime = sniffImageType(img.body);
+          if (!mime || !VISION_MIMES.has(mime)) return null;
+          return { url, mime, base64: img.body.toString('base64') };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const candidates = downloaded.filter((c): c is ImageCandidate => !!c).slice(0, maxCandidates);
+    if (candidates.length === 0) return null;
+
+    // 4. the vision model decides (or rejects them all)
+    const idx = await deps.chooser(opts.photo, candidates, { name: opts.name, brand: opts.brand });
+    return idx !== null && Number.isInteger(idx) && idx >= 0 && idx < candidates.length ? candidates[idx].url : null;
   } catch {
-    /* unreachable / blocked page: no image */
+    return null;
   }
-  return null;
 }
