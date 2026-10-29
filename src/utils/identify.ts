@@ -12,6 +12,8 @@ export interface IdentifyResult {
   servingUnits: number | null; // units per DOSE (never the daily total); null for ranges / not found
   timesPerDay: number | null;
   directions: string | null;
+  ingredients: string | null; // full list as the manufacturer prints it (amounts per serving + other ingredients)
+  description: string | null; // 1-2 sentences, manufacturer wording
   sourceUrl: string | null;
   codes: string[];
   match: IdentifyMatch;
@@ -56,6 +58,8 @@ export function normalizeIdentify(raw: Record<string, unknown>): IdentifyResult 
     servingUnits: usable ? normalizeCount(raw.servingUnits, 50) : null,
     timesPerDay: usable ? normalizeCount(raw.timesPerDay, 24) : null,
     directions: usable ? str(raw.directions, 400) : null,
+    ingredients: usable ? str(raw.ingredients, 3000) : null,
+    description: usable ? str(raw.description, 600) : null,
     sourceUrl,
     codes: codesFrom(raw.codeRead ?? raw.codes),
     match,

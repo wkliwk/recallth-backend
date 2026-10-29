@@ -35,6 +35,7 @@ const gemini = (obj: unknown) => ({
 const good = {
   nameOriginal: 'ヒアレインSミニ点眼', nameEnglish: 'Hyalein S Mini Eye Drops', brand: 'Santen', strength: '0.1% Sodium Hyaluronate',
   unitForm: 'drop', packSize: 10, servingUnits: 1, timesPerDay: 5, directions: 'Instill 1 drop, 5 to 6 times a day.',
+  ingredients: 'Per serving: Sodium hyaluronate 0.1%. Other ingredients: Boric acid, Sodium chloride.', description: 'Moisturising eye drops for dry eyes.',
   sourceUrl: 'https://example.com/hyalein', codeRead: null, match: 'exact',
 };
 
@@ -56,6 +57,8 @@ describe('POST /cabinet/identify', () => {
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA', mimeType: 'image/heic' });
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({ nameEnglish: 'Hyalein S Mini Eye Drops', unitForm: 'drop', servingUnits: 1, timesPerDay: 5, match: 'exact', usable: true });
+    expect(res.body.data.ingredients).toContain('Sodium hyaluronate 0.1%');
+    expect(res.body.data.description).toBe('Moisturising eye drops for dry eyes.');
   });
 
   it('sends the photo with its mime type and the hint, and asks for per-dose counts', async () => {
@@ -66,6 +69,9 @@ describe('POST /cabinet/identify', () => {
     expect(prompt).toContain('name: Curcuma; brand: webber naturals; strength: 500 mg');
     expect(prompt).toMatch(/per DOSE, never the daily total/);
     expect(prompt).toMatch(/Never assume 1/);
+    expect(prompt).toMatch(/FULL ingredient list/);
+    expect(prompt).toMatch(/do not write it from memory/);
+    expect(prompt).toMatch(/manufacturer's own wording/);
     expect(prompt).not.toContain('junk');
   });
 
@@ -73,7 +79,7 @@ describe('POST /cabinet/identify', () => {
     mockGenerateContent.mockResolvedValue(gemini({ ...good, match: 'unsure' }));
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
     expect(res.status).toBe(200);
-    expect(res.body.data).toMatchObject({ usable: false, servingUnits: null, directions: null });
+    expect(res.body.data).toMatchObject({ usable: false, servingUnits: null, directions: null, ingredients: null, description: null });
   });
 
   it('a daily-range answer stays null', async () => {
@@ -82,10 +88,26 @@ describe('POST /cabinet/identify', () => {
     expect(res.body.data.servingUnits).toBeNull();
   });
 
-  it('unparseable model output → 422', async () => {
+  it('unparseable model output on every attempt → 422 after three tries', async () => {
     mockGenerateContent.mockResolvedValue(gemini('Sorry, I could not find it.'));
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
     expect(res.status).toBe(422);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a non-JSON answer and succeeds on the next attempt', async () => {
+    mockGenerateContent.mockResolvedValueOnce(gemini('I cannot read this.')).mockResolvedValueOnce(gemini(good));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.usable).toBe(true);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocked by RECITATION on all three attempts → 500', async () => {
+    mockGenerateContent.mockRejectedValue(new Error('Candidate was blocked due to RECITATION'));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(500);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(3);
   });
 
   it('model failure → 500 without leaking details', async () => {
@@ -122,5 +144,39 @@ describe('POST /cabinet/identify', () => {
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
     expect(mockFindProductImage).not.toHaveBeenCalled();
     expect(res.body.data.imageUrl).toBeNull();
+  });
+
+  it('retries when Gemini blocks the candidate for RECITATION, then succeeds', async () => {
+    mockGenerateContent
+      .mockRejectedValueOnce(new Error('[GoogleGenerativeAI Error]: Candidate was blocked due to RECITATION'))
+      .mockResolvedValueOnce(gemini(good));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.usable).toBe(true);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(2);
+  });
+
+  it('the last attempt after repeated RECITATION blocks drops ingredients/description so the product still comes back', async () => {
+    const blocked = new Error('Candidate was blocked due to RECITATION');
+    mockGenerateContent
+      .mockRejectedValueOnce(blocked)
+      .mockRejectedValueOnce(blocked)
+      .mockResolvedValueOnce(gemini({ ...good, ingredients: null, description: null }));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ usable: true, ingredients: null, description: null, servingUnits: 1 });
+    const third = mockGenerateContent.mock.calls[2][0][0] as string;
+    expect(third).not.toMatch(/"ingredients":/);
+    expect(third).not.toMatch(/"description":/);
+    expect(third).toMatch(/"directions":/);
+    const first = mockGenerateContent.mock.calls[0][0][0] as string;
+    expect(first).toMatch(/"ingredients":/);
+  });
+
+  it('other model errors are not retried', async () => {
+    mockGenerateContent.mockRejectedValue(new Error('429 quota exceeded'));
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.status).toBe(500);
+    expect(mockGenerateContent).toHaveBeenCalledTimes(1);
   });
 });
