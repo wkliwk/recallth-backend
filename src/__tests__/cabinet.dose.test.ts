@@ -77,6 +77,9 @@ describe('POST /cabinet/scan', () => {
     const prompt = mockGenerateContent.mock.calls[0][0][0] as string;
     expect(prompt).toMatch(/Never assume 1/);
     expect(prompt).toMatch(/bottleCount/);
+    expect(prompt).toMatch(/FULL product name/);
+    expect(prompt).toMatch(/set it whenever the package shows the form/);
+    expect(prompt).toMatch(/グミサプリ vs 瞬間サプリ/);
   });
 });
 
