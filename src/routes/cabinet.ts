@@ -16,6 +16,7 @@ import { parseCabinetTextFields } from '../utils/cabinetText';
 import { safeFetch, UnsafeUrlError } from '../utils/safeFetch';
 import { resolveServableImageType } from '../utils/imageType';
 import { rewrapImageUrl } from '../utils/imageUrl';
+import { normalizeIdentify } from '../utils/identify';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -959,6 +960,95 @@ Rules:
   } catch (err) {
     console.error('[POST /cabinet/scan]', err);
     res.status(500).json({ success: false, data: null, error: 'Scan failed' });
+  }
+});
+
+// POST /cabinet/identify — identify the exact product from its package photo (multimodal + Google Search grounding)
+// and read the manufacturer's directions. Replaces guessing from OCR'd text; /ai-lookup stays as the text fallback.
+router.post('/identify', async (req: AuthRequest, res: Response): Promise<void> => {
+  const { imageBase64, mimeType, hint } = req.body as {
+    imageBase64?: string;
+    mimeType?: string;
+    hint?: { name?: unknown; brand?: unknown; strength?: unknown };
+  };
+
+  if (!imageBase64 || typeof imageBase64 !== 'string') {
+    res.status(400).json({ success: false, data: null, error: 'imageBase64 is required' });
+    return;
+  }
+
+  const validMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+  const resolvedMime = (mimeType && validMimeTypes.includes(mimeType)) ? mimeType : 'image/jpeg';
+
+  const hintText = ['name', 'brand', 'strength']
+    .map((k) => {
+      const v = (hint as Record<string, unknown> | undefined)?.[k];
+      return typeof v === 'string' && v.trim() ? `${k}: ${v.trim().slice(0, 120)}` : '';
+    })
+    .filter(Boolean)
+    .join('; ');
+
+  try {
+    const model = getGenAI().getGenerativeModel({
+      model: MODELS.CHAT,
+      tools: [{ googleSearch: {} } as any],
+    });
+
+    const prompt = `You identify a retail health product (supplement, vitamin, OTC drug, eye drops, etc.) from a photo of its package.
+
+Do this:
+1. Read everything printed on the package: brand, product name in its original language, strength per unit, pack size, and any codes (UPC/EAN/JAN barcode digits, Health Canada NPN/DIN).
+2. Use Google Search to find the manufacturer page or a major retailer/database page for this EXACT product and pack size. Search by the code if you can read one, otherwise by brand + exact product name + pack size.
+3. From that page take the manufacturer's directions: how many units per dose and how often.
+${hintText ? `\nA first label scan read: ${hintText}. Treat this only as a hint; trust the photo.\n` : ''}
+Return ONLY a JSON object (no markdown):
+{
+  "nameOriginal": string,
+  "nameEnglish": string | null,
+  "brand": string | null,
+  "strength": string | null,       // amount per unit as printed (or the main active)
+  "unitForm": "capsule"|"tablet"|"softgel"|"gummy"|"scoop"|"drop"|"other"|null,
+  "packSize": number | null,
+  "servingUnits": number | null,   // units in ONE dose from the directions; null if not found
+  "timesPerDay": number | null,    // how many doses per day
+  "directions": string | null,     // the directions text, short
+  "sourceUrl": string | null,      // the page you used
+  "codeRead": string | null,       // barcode / NPN / JAN you read from the package, if any
+  "match": "exact" | "likely" | "unsure"
+}
+
+Rules:
+- servingUnits is per DOSE, never the daily total. "1 capsule with breakfast, 1 with lunch and 1 with dinner" = servingUnits 1, timesPerDay 3.
+- If the directions give a range ("1-3 capsules"), servingUnits = null.
+- Never assume 1. If you cannot find a page for this exact product, set match "unsure" and servingUnits null.
+- Only claim "exact" if the page is for this product and pack size; use "likely" for the same product in a different pack size or a close variant.`;
+
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: resolvedMime, data: imageBase64 } },
+    ]);
+
+    const usage = result.response.usageMetadata;
+    console.log(
+      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=identify-photo`
+    );
+    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+
+    const text = result.response.text().trim();
+    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(cleaned) as Record<string, unknown>;
+    } catch {
+      res.status(422).json({ success: false, data: null, error: 'Could not identify the product from this photo' });
+      return;
+    }
+
+    res.json({ success: true, error: null, data: normalizeIdentify(parsed), aiUsage });
+  } catch (err) {
+    console.error('[POST /cabinet/identify]', err);
+    res.status(500).json({ success: false, data: null, error: 'Identify failed' });
   }
 });
 
