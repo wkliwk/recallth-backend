@@ -117,4 +117,33 @@ describe('pickProductImage', () => {
     expect(pageCalls).toBe(4);
     expect((chooser.mock.calls[0] as unknown as [unknown, unknown[]])[1].length).toBeLessThanOrEqual(3);
   });
+
+  it('extra pages are searched only when the given pages gave no candidate, deduped and tried', async () => {
+    const blocked = 'https://aeon.example.com/p/1';
+    const other = 'https://www.brand.com/p/1';
+    const f = jest.fn(async (url: string) => {
+      if (url === blocked) return resp(403, 'no', url);
+      if (url === other) return resp(200, '<meta property="og:image" content="https://cdn.brand.com/front.jpg">', url);
+      if (url === 'https://cdn.brand.com/front.jpg') return resp(200, JPEG, url);
+      return resp(404, '', url);
+    });
+    const morePages = jest.fn(async () => [blocked, other]);
+    const chooser = jest.fn(async () => 0);
+    const url = await pickProductImage({ pageUrls: [blocked], photo }, { safeFetch: f, chooser, morePages });
+    expect(url).toBe('https://cdn.brand.com/front.jpg');
+    expect(morePages).toHaveBeenCalledTimes(1);
+    expect(f.mock.calls.filter((c) => c[0] === blocked)).toHaveLength(1); // not retried
+
+    morePages.mockClear();
+    await pickProductImage({ pageUrls: [other], photo }, { safeFetch: f, chooser, morePages });
+    expect(morePages).not.toHaveBeenCalled(); // first pages already had candidates
+  });
+
+  it('a failing or empty extra search just gives null', async () => {
+    const f = async (u: string) => resp(403, 'no', u);
+    const chooser = jest.fn(async () => 0);
+    expect(await pickProductImage({ pageUrls: ['https://a.example.com/'], photo }, { safeFetch: f, chooser, morePages: async () => { throw new Error('search down'); } })).toBeNull();
+    expect(await pickProductImage({ pageUrls: ['https://a.example.com/'], photo }, { safeFetch: f, chooser, morePages: async () => [] })).toBeNull();
+    expect(chooser).not.toHaveBeenCalled();
+  });
 });
