@@ -113,17 +113,18 @@ export interface PickOptions {
 
 export async function pickProductImage(
   opts: PickOptions,
-  deps: { safeFetch?: Fetcher; chooser: ImageChooser; maxPages?: number; perPage?: number; maxCandidates?: number },
+  deps: { safeFetch?: Fetcher; chooser: ImageChooser; morePages?: () => Promise<string[]>; maxPages?: number; perPage?: number; maxCandidates?: number },
 ): Promise<string | null> {
   const fetcher = deps.safeFetch ?? (defaultSafeFetch as unknown as Fetcher);
   const maxPages = deps.maxPages ?? 4;
   const perPage = deps.perPage ?? 3;
   const maxCandidates = deps.maxCandidates ?? 6;
 
-  try {
-    // 1. pages (in the given order = most reliable source first), fetched in parallel
+  // pages (in the given order = most reliable source first) -> downloaded, byte-verified candidate images
+  const collect = async (pageUrls: string[]): Promise<ImageCandidate[]> => {
+    // 1. pages, fetched in parallel
     const pages = await Promise.all(
-      opts.pageUrls.slice(0, maxPages).map(async (url) => {
+      pageUrls.slice(0, maxPages).map(async (url) => {
         try {
           const res = await fetcher(url, { timeoutMs: 3500, maxBytes: 1_200_000, headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml', 'Accept-Language': 'en-US,en;q=0.9' } });
           return res.ok ? extractImageCandidates(res.text(), res.url || url).slice(0, perPage) : [];
@@ -160,7 +161,17 @@ export async function pickProductImage(
         }
       }),
     );
-    const candidates = downloaded.filter((c): c is ImageCandidate => !!c).slice(0, maxCandidates);
+    return downloaded.filter((c): c is ImageCandidate => !!c).slice(0, maxCandidates);
+  };
+
+  try {
+    let candidates = await collect(opts.pageUrls);
+    // The given pages gave nothing (blocked, no pictures): look for the product's other pages and try those.
+    if (candidates.length === 0 && deps.morePages) {
+      const tried = new Set(opts.pageUrls);
+      const extra = (await deps.morePages().catch(() => [])).filter((u) => !tried.has(u));
+      if (extra.length > 0) candidates = await collect(extra);
+    }
     if (candidates.length === 0) return null;
 
     // 4. the vision model decides (or rejects them all)

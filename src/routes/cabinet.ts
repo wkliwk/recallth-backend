@@ -18,7 +18,7 @@ import { resolveServableImageType } from '../utils/imageType';
 import { rewrapImageUrl } from '../utils/imageUrl';
 import { normalizeIdentify } from '../utils/identify';
 import { pickProductImage, ImageChooser } from '../utils/pageImage';
-import { parseReferences, buildReferences, Reference } from '../utils/references';
+import { parseReferences, buildReferences, Reference, MAX_REFERENCES } from '../utils/references';
 import { normalizeDoseFields, composeLegacyDosage } from '../utils/dose';
 import { getCached, setCached } from '../models/AiCache';
 
@@ -1132,6 +1132,26 @@ Return ONLY JSON: {"best": <1-based index of the best candidate, or null if none
   return typeof best === 'number' && Number.isInteger(best) && best >= 1 && best <= candidates.length ? best - 1 : null;
 };
 
+// Other pages about the product (official site, reputable retailers) via a grounded search; used only when the
+// pages we already have gave no picture. Resolved to final URLs and ranked official-first. Never throws.
+async function findMorePages(name?: string, brand?: string): Promise<string[]> {
+  const label = [brand, name].filter(Boolean).join(' ').trim().slice(0, 160);
+  if (label.length < 3) return [];
+  try {
+    const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT, tools: [{ googleSearch: {} } as any] });
+    const result = await model.generateContent(`Find web pages that show the product "${label}" with its product photos: the manufacturer's official website first, then major reputable retailers (not blogs, forums or review sites). Reply with one short line naming the product.`);
+    const usage = result.response.usageMetadata;
+    console.log(`[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=product-pages`);
+    const gm = (result.response.candidates?.[0] as any)?.groundingMetadata;
+    const chunks = ((gm?.groundingChunks ?? []) as Array<{ web?: { uri?: string; title?: string } }>).map((c) => ({ uri: c.web?.uri, title: c.web?.title }));
+    const refs = await buildReferences({ chunks, brand });
+    return refs.slice(0, MAX_REFERENCES).map((r) => r.url);
+  } catch (err) {
+    console.error('[findMorePages]', err);
+    return [];
+  }
+}
+
 // POST /cabinet/product-image — a clear front-facing picture of the product from its reference pages, verified by a
 // vision model against the user's photo. Returns { imageUrl } or { imageUrl: null }; never fails the client flow.
 router.post('/product-image', async (req: AuthRequest, res: Response): Promise<void> => {
@@ -1158,9 +1178,9 @@ router.post('/product-image', async (req: AuthRequest, res: Response): Promise<v
     const picked = await Promise.race<string | null>([
       pickProductImage(
         { pageUrls: pageUrls as string[], photo: { base64: imageBase64, mime: resolvedMime }, name: typeof name === 'string' ? name : undefined, brand: typeof brand === 'string' ? brand : undefined },
-        { chooser: geminiImageChooser },
+        { chooser: geminiImageChooser, morePages: () => findMorePages(typeof name === 'string' ? name : undefined, typeof brand === 'string' ? brand : undefined) },
       ),
-      new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 14000)),
+      new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 25000)),
     ]);
     let imageUrl: string | null = null;
     if (picked) {
