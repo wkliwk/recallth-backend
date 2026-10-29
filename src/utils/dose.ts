@@ -51,7 +51,7 @@ export function normalizeDoseFields(raw: Record<string, unknown>): DoseFields {
 /** Back-compat `dosage` string: "N unit(s) (strength each)" when the count is known, else the strength. */
 export function composeLegacyDosage(d: DoseFields, fallback?: unknown): string | null {
   if (d.servingUnits && d.unitForm && d.unitForm !== 'other') {
-    const unit = d.servingUnits === 1 ? d.unitForm : `${d.unitForm}s`;
+    const unit = d.servingUnits === 1 ? d.unitForm : d.unitForm === 'gummy' ? 'gummies' : `${d.unitForm}s`;
     return d.strength ? `${d.servingUnits} ${unit} (${d.strength} each)` : `${d.servingUnits} ${unit}`;
   }
   return d.strength ?? (typeof fallback === 'string' && fallback.trim() ? fallback.trim() : null);

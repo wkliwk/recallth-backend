@@ -44,6 +44,10 @@ describe('composeLegacyDosage', () => {
     expect(composeLegacyDosage({ strength: '500 mg', unitForm: 'capsule', servingUnits: 2, bottleCount: null })).toBe('2 capsules (500 mg each)');
     expect(composeLegacyDosage({ strength: '500 mg', unitForm: 'capsule', servingUnits: 1, bottleCount: null })).toBe('1 capsule (500 mg each)');
   });
+  it('pluralises gummy as gummies', () => {
+    expect(composeLegacyDosage({ strength: '10 mg', unitForm: 'gummy', servingUnits: 2, bottleCount: null })).toBe('2 gummies (10 mg each)');
+    expect(composeLegacyDosage({ strength: null, unitForm: 'gummy', servingUnits: 1, bottleCount: null })).toBe('1 gummy');
+  });
   it('falls back to the model dosage text, then null', () => {
     expect(composeLegacyDosage({ strength: null, unitForm: null, servingUnits: null, bottleCount: null }, '1 scoop')).toBe('1 scoop');
     expect(composeLegacyDosage({ strength: null, unitForm: null, servingUnits: null, bottleCount: null })).toBeNull();

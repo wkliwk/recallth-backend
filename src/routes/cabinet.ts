@@ -904,11 +904,11 @@ router.post('/scan', async (req: AuthRequest, res: Response): Promise<void> => {
 
 Extract:
 {
-  "name": string,               // product name (e.g. "Magnesium Glycinate")
+  "name": string,               // the FULL product name as printed, including product-line / variant / flavour words (e.g. "Advanced Absorption Turmeric", "グミサプリ 亜鉛＆マカ"); the brand goes in "brand", not here
   "brand": string | null,       // brand/manufacturer (e.g. "NOW Foods")
   "type": string,               // one of: "supplement", "medication", "vitamin"
   "strength": string | null,    // amount of active ingredient PER UNIT as printed, e.g. "500 mg", "1000 IU", "25 mcg"
-  "unitForm": string | null,    // one of: "capsule", "tablet", "softgel", "gummy", "scoop", "drop", "other"
+  "unitForm": string | null,    // one of: "capsule", "tablet", "softgel", "gummy", "scoop", "drop", "other" — set it whenever the package shows the form (グミ/gummies → gummy, 錠/tablets → tablet, カプセル/capsules → capsule), even if no count is printed
   "servingUnits": number | null,// how many units to take per dose/serving — ONLY if the label's directions / supplement facts explicitly say so (e.g. "Take 2 capsules daily", "Serving size: 2 capsules")
   "bottleCount": number | null, // how many units are in the bottle (e.g. "120 capsules" -> 120)
   "ingredients": string | null  // key active ingredients, comma separated
@@ -916,6 +916,7 @@ Extract:
 
 Rules:
 - "strength" is per capsule/tablet/etc. It is NOT how many to take and NOT the bottle count.
+- "name" must keep distinguishing words: two different products from the same brand often differ only by the product line or form word (e.g. グミサプリ vs 瞬間サプリ). Do not shorten it to the ingredient alone.
 - "servingUnits" must be null unless the label text itself states how many to take. Front-of-bottle photos usually do not — then it MUST be null. Never assume 1.
 - "bottleCount" is the number of units in the container, never the serving size.
 - If you cannot read the label clearly, extract what you can and set unclear fields to null
