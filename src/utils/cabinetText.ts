@@ -1,4 +1,6 @@
 export const MAX_TEXT_LENGTH = 2000;
+/** A full ingredient list (with amounts + other ingredients) can be long. */
+export const MAX_INGREDIENTS_LENGTH = 5000;
 /** A data:image URL is a small thumbnail (tens of KB); anything bigger is refused. */
 export const MAX_DATA_URL_LENGTH = 400_000;
 
@@ -16,7 +18,7 @@ export type CabinetTextParse =
  * Validate the optional free-text fields accepted on create.
  * - absent / null / empty-after-trim → left out (field not set)
  * - non-string → error
- * - description / ingredients are trimmed and capped at MAX_TEXT_LENGTH
+ * - description is trimmed and capped at MAX_TEXT_LENGTH, ingredients at MAX_INGREDIENTS_LENGTH
  * - imageUrl must be an http(s) URL or a data:image/ URL
  */
 export function parseCabinetTextFields(body: Record<string, unknown> | undefined): CabinetTextParse {
@@ -40,7 +42,7 @@ export function parseCabinetTextFields(body: Record<string, unknown> | undefined
       }
       value.imageUrl = trimmed;
     } else {
-      value[field] = trimmed.slice(0, MAX_TEXT_LENGTH);
+      value[field] = trimmed.slice(0, field === 'ingredients' ? MAX_INGREDIENTS_LENGTH : MAX_TEXT_LENGTH);
     }
   }
 

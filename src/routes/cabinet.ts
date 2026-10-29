@@ -1014,6 +1014,8 @@ Return ONLY a JSON object (no markdown):
   "servingUnits": number | null,   // units in ONE dose from the directions; null if not found
   "timesPerDay": number | null,    // how many doses per day
   "directions": string | null,     // the directions text, short
+  "ingredients": string | null,    // the FULL ingredient list as the manufacturer prints it: "Per serving: <active ingredient> <amount>; ..." then "Other ingredients: <a>, <b>, ..."; include an allergen line only if it is part of the ingredient panel. null if not found
+  "description": string | null,    // 1-2 plain sentences saying what the product is and its main stated benefit, in the manufacturer's own wording; null if not found
   "sourceUrl": string | null,      // the page you used
   "codeRead": string | null,       // barcode / NPN / JAN you read from the package, if any
   "match": "exact" | "likely" | "unsure"
@@ -1023,26 +1025,45 @@ Rules:
 - servingUnits is per DOSE, never the daily total. "1 capsule with breakfast, 1 with lunch and 1 with dinner" = servingUnits 1, timesPerDay 3.
 - If the directions give a range ("1-3 capsules"), servingUnits = null.
 - Never assume 1. If you cannot find a page for this exact product, set match "unsure" and servingUnits null.
+- ingredients: if the ingredients / Supplement Facts panel is visible in the photo, read it from the photo; otherwise take it from the page you cited. Transcribe faithfully, do not write it from memory or from general knowledge; if you cannot find it, null. Keep amounts and units exactly as printed.
+- description: use the manufacturer's wording, not your own marketing; null if not found.
 - Only claim "exact" if the page is for this product and pack size; use "likely" for the same product in a different pack size or a close variant.`;
 
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { mimeType: resolvedMime, data: imageBase64 } },
-    ]);
-
-    const usage = result.response.usageMetadata;
-    console.log(
-      `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=identify-photo`
-    );
-    const aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
-
-    const text = result.response.text().trim();
-    const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(cleaned) as Record<string, unknown>;
-    } catch {
+    // Generation is not deterministic: transcribing a full ingredient list can trip Gemini's RECITATION filter (the
+    // candidate is blocked) and now and then the model answers with something that is not JSON. Try up to three times;
+    // the last attempt drops ingredients/description so the product and its directions still come back.
+    const corePrompt = prompt
+      .split('\n')
+      .filter((l) => !/"ingredients":|"description":|^- ingredients:|^- description:/.test(l))
+      .join('\n');
+    let parsed: Record<string, unknown> | undefined;
+    let aiUsage: ReturnType<typeof buildAiUsage> | undefined;
+    let lastErr: unknown;
+    for (const p of [prompt, prompt, corePrompt]) {
+      try {
+        const result = await model.generateContent([p, { inlineData: { mimeType: resolvedMime, data: imageBase64 } }]);
+        const usage = result.response.usageMetadata;
+        console.log(
+          `[AI] model=${MODELS.CHAT} input_tokens=${usage?.promptTokenCount} output_tokens=${usage?.candidatesTokenCount} task=identify-photo`
+        );
+        aiUsage = buildAiUsage(MODELS.CHAT, usage?.promptTokenCount, usage?.candidatesTokenCount);
+        const text = result.response.text().trim();
+        const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        try {
+          parsed = JSON.parse(cleaned) as Record<string, unknown>;
+          break;
+        } catch {
+          lastErr = undefined;
+          console.warn('[identify] unparseable model output, retrying');
+        }
+      } catch (e) {
+        if (!/RECITATION/i.test(String((e as Error)?.message ?? e))) throw e;
+        lastErr = e;
+        console.warn('[identify] blocked by RECITATION, retrying');
+      }
+    }
+    if (!parsed) {
+      if (lastErr) throw lastErr; // blocked every time → generic 500
       res.status(422).json({ success: false, data: null, error: 'Could not identify the product from this photo' });
       return;
     }

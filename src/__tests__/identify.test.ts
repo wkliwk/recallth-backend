@@ -10,6 +10,8 @@ const base = {
   servingUnits: 2,
   timesPerDay: 1,
   directions: 'Recommended dosage (adults): 2 capsules daily or as directed by a physician.',
+  ingredients: 'Per serving: Curcuminoids 150 mg; Phosphatidylcholine 150 mg. Other ingredients: Hypromellose, Rice flour.',
+  description: 'Helps relieve joint pain and inflammation.',
   sourceUrl: 'https://example.com/p/1',
   codeRead: 'NPN 80049256, UPC 625273051742',
   match: 'exact',
@@ -18,6 +20,8 @@ const base = {
 describe('normalizeIdentify', () => {
   it('keeps a good exact match and marks it usable', () => {
     const r = normalizeIdentify(base);
+    expect(r.ingredients).toContain('Per serving: Curcuminoids 150 mg');
+    expect(r.description).toBe('Helps relieve joint pain and inflammation.');
     expect(r).toMatchObject({ unitForm: 'capsule', packSize: 120, servingUnits: 2, timesPerDay: 1, match: 'exact', usable: true, brand: 'webber naturals' });
     expect(r.codes).toEqual(['NPN 80049256, UPC 625273051742']);
   });
@@ -32,6 +36,8 @@ describe('normalizeIdentify', () => {
     expect(r.servingUnits).toBeNull();
     expect(r.timesPerDay).toBeNull();
     expect(r.directions).toBeNull();
+    expect(r.ingredients).toBeNull();
+    expect(r.description).toBeNull();
     expect(r.nameOriginal).toBe(base.nameOriginal); // identification fields stay
   });
 
@@ -60,6 +66,9 @@ describe('normalizeIdentify', () => {
     expect(normalizeIdentify({ ...base, unitForm: 'lozenge' }).unitForm).toBeNull();
     expect(normalizeIdentify({ ...base, brand: '  Santen  ' }).brand).toBe('Santen');
     expect(normalizeIdentify({ ...base, directions: 'x'.repeat(2000) }).directions).toHaveLength(400);
+    expect(normalizeIdentify({ ...base, ingredients: 'a'.repeat(9000) }).ingredients).toHaveLength(3000);
+    expect(normalizeIdentify({ ...base, description: 'b'.repeat(2000) }).description).toHaveLength(600);
+    expect(normalizeIdentify({ ...base, ingredients: 123, description: {} } as unknown as Record<string, unknown>)).toMatchObject({ ingredients: null, description: null });
     const junk = normalizeIdentify({ nameOriginal: 5, brand: [], codeRead: { a: 1 } } as unknown as Record<string, unknown>);
     expect(junk).toMatchObject({ nameOriginal: null, brand: null, codes: [], usable: false });
   });

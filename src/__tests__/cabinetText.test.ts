@@ -1,4 +1,4 @@
-import { parseCabinetTextFields, MAX_TEXT_LENGTH, MAX_DATA_URL_LENGTH } from '../utils/cabinetText';
+import { parseCabinetTextFields, MAX_TEXT_LENGTH, MAX_INGREDIENTS_LENGTH, MAX_DATA_URL_LENGTH } from '../utils/cabinetText';
 
 describe('parseCabinetTextFields', () => {
   it('returns nothing when the fields are absent, null or blank', () => {
@@ -31,10 +31,14 @@ describe('parseCabinetTextFields', () => {
     }
   });
 
-  it('caps description and ingredients at the max length', () => {
-    const r = parseCabinetTextFields({ ingredients: 'x'.repeat(MAX_TEXT_LENGTH + 500) });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.ingredients).toHaveLength(MAX_TEXT_LENGTH);
+  it('caps description at MAX_TEXT_LENGTH and ingredients at the larger MAX_INGREDIENTS_LENGTH', () => {
+    const d = parseCabinetTextFields({ description: 'x'.repeat(MAX_TEXT_LENGTH + 500) });
+    expect(d.ok && d.value.description).toHaveLength(MAX_TEXT_LENGTH);
+    const full = 'y'.repeat(MAX_TEXT_LENGTH + 1000); // a full ingredient list is not cut at 2000
+    const i = parseCabinetTextFields({ ingredients: full });
+    expect(i.ok && i.value.ingredients).toHaveLength(full.length);
+    const huge = parseCabinetTextFields({ ingredients: 'z'.repeat(MAX_INGREDIENTS_LENGTH + 500) });
+    expect(huge.ok && huge.value.ingredients).toHaveLength(MAX_INGREDIENTS_LENGTH);
   });
 
   it('accepts a small data:image thumbnail and rejects an oversized one', () => {
