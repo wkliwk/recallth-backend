@@ -15,8 +15,10 @@ jest.mock('../models/AiCache', () => ({
   deleteCached: jest.fn().mockResolvedValue(undefined),
 }));
 
-const mockFindProductImage = jest.fn();
-jest.mock('../utils/pageImage', () => ({ findProductImage: (...a: unknown[]) => mockFindProductImage(...a) }));
+const mockPickProductImage = jest.fn();
+jest.mock('../utils/pageImage', () => ({ pickProductImage: (...a: unknown[]) => mockPickProductImage(...a) }));
+const mockBuildReferences = jest.fn();
+jest.mock('../utils/references', () => ({ ...jest.requireActual('../utils/references'), buildReferences: (...a: unknown[]) => mockBuildReferences(...a) }));
 
 import cabinetRouter from '../routes/cabinet';
 
@@ -42,7 +44,8 @@ const good = {
 beforeEach(() => {
   jest.clearAllMocks();
   process.env.GOOGLE_GEMINI_API_KEY = 'test-gemini-key';
-  mockFindProductImage.mockResolvedValue(null);
+  mockBuildReferences.mockResolvedValue([]);
+  mockPickProductImage.mockResolvedValue(null);
 });
 
 describe('POST /cabinet/identify', () => {
@@ -124,26 +127,48 @@ describe('POST /cabinet/identify', () => {
     expect(res.body.data.usable).toBe(true);
   });
 
-  it('adds the product image from the source page, wrapped through this host\'s image proxy', async () => {
-    mockGenerateContent.mockResolvedValue(gemini(good));
-    mockFindProductImage.mockResolvedValue('https://cdn.example.com/hyalein.jpg');
-    const res = await request(app).post('/cabinet/identify').set('Host', 'api.test').set('X-Forwarded-Proto', 'https').send({ imageBase64: 'AAAA' });
-    expect(mockFindProductImage).toHaveBeenCalledWith('https://example.com/hyalein');
-    expect(res.body.data.imageUrl).toBe(`https://api.test/img/image-proxy?url=${encodeURIComponent('https://cdn.example.com/hyalein.jpg')}`);
+  it('returns reference links (official first) built from the cited page and the grounding chunks', async () => {
+    const refs = [
+      { url: 'https://www.santen.com/p', title: 'Hyalein', kind: 'official' },
+      { url: 'https://www.costco.ca/p', title: 'Costco', kind: 'retailer' },
+    ];
+    mockBuildReferences.mockResolvedValue(refs);
+    mockGenerateContent.mockResolvedValue({
+      response: {
+        text: () => JSON.stringify(good),
+        usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1 },
+        candidates: [{ groundingMetadata: { groundingChunks: [{ web: { uri: 'https://vertexaisearch.cloud.google.com/r/1', title: 'santen.com' } }, { web: { uri: 'https://vertexaisearch.cloud.google.com/r/2', title: 'costco.ca' } }] } }],
+      },
+    });
+    const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    expect(res.body.data.references).toEqual(refs);
+    expect(mockBuildReferences).toHaveBeenCalledWith({
+      sourceUrl: 'https://example.com/hyalein',
+      chunks: [{ uri: 'https://vertexaisearch.cloud.google.com/r/1', title: 'santen.com' }, { uri: 'https://vertexaisearch.cloud.google.com/r/2', title: 'costco.ca' }],
+      brand: 'Santen',
+    });
+    expect('imageUrl' in res.body.data).toBe(false); // images come from /product-image now
   });
 
-  it('imageUrl is null when no image is found; the request still succeeds', async () => {
+  it('falls back to the cited page when no reference could be resolved', async () => {
     mockGenerateContent.mockResolvedValue(gemini(good));
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
-    expect(res.status).toBe(200);
-    expect(res.body.data.imageUrl).toBeNull();
+    expect(res.body.data.references).toEqual([{ url: 'https://example.com/hyalein', title: 'Source', kind: 'other' }]);
   });
 
-  it('does not look for an image when the match is not usable', async () => {
+  it('no references (and no lookup) when the match is not usable', async () => {
     mockGenerateContent.mockResolvedValue(gemini({ ...good, match: 'unsure' }));
     const res = await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
-    expect(mockFindProductImage).not.toHaveBeenCalled();
-    expect(res.body.data.imageUrl).toBeNull();
+    expect(mockBuildReferences).not.toHaveBeenCalled();
+    expect(res.body.data.references).toEqual([]);
+  });
+
+  it('the prompt asks for official / reliable sources', async () => {
+    mockGenerateContent.mockResolvedValue(gemini(good));
+    await request(app).post('/cabinet/identify').send({ imageBase64: 'AAAA' });
+    const prompt = mockGenerateContent.mock.calls[0][0][0] as string;
+    expect(prompt).toMatch(/prefer the manufacturer's official website/);
+    expect(prompt).toMatch(/Avoid blogs, affiliate or review sites/);
   });
 
   it('retries when Gemini blocks the candidate for RECITATION, then succeeds', async () => {
