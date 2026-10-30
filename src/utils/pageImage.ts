@@ -18,7 +18,7 @@ export interface ImageCandidate {
 }
 
 /** Chooses the best candidate (0-based index) or null. Injected so tests do not need a model. */
-export type ImageChooser = (photo: { base64: string; mime: string }, candidates: ImageCandidate[], hint: { name?: string; brand?: string }) => Promise<number | null>;
+export type ImageChooser = (photo: { base64: string; mime: string } | null, candidates: ImageCandidate[], hint: { name?: string; brand?: string }) => Promise<number | null>;
 
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 // Formats the vision model accepts (no AVIF / GIF).
@@ -106,7 +106,8 @@ export function extractImageCandidates(html: string, baseUrl: string): string[] 
 
 export interface PickOptions {
   pageUrls: string[];
-  photo: { base64: string; mime: string };
+  photo?: { base64: string; mime: string } | null; // none for saved items: judged against name + brand
+  excludeUrls?: string[]; // pictures the user already rejected
   name?: string;
   brand?: string;
 }
@@ -119,6 +120,7 @@ export async function pickProductImage(
   const maxPages = deps.maxPages ?? 4;
   const perPage = deps.perPage ?? 3;
   const maxCandidates = deps.maxCandidates ?? 6;
+  const exclude = new Set(opts.excludeUrls ?? []);
 
   // pages (in the given order = most reliable source first) -> downloaded, byte-verified candidate images
   const collect = async (pageUrls: string[]): Promise<ImageCandidate[]> => {
@@ -161,11 +163,11 @@ export async function pickProductImage(
         }
       }),
     );
-    return downloaded.filter((c): c is ImageCandidate => !!c).slice(0, maxCandidates);
+    return downloaded.filter((c): c is ImageCandidate => !!c && !exclude.has(c.url)).slice(0, maxCandidates);
   };
 
   try {
-    let candidates = await collect(opts.pageUrls);
+    let candidates = opts.pageUrls.length > 0 ? await collect(opts.pageUrls) : [];
     // The given pages gave nothing (blocked, no pictures): look for the product's other pages and try those.
     if (candidates.length === 0 && deps.morePages) {
       const tried = new Set(opts.pageUrls);
@@ -175,7 +177,7 @@ export async function pickProductImage(
     if (candidates.length === 0) return null;
 
     // 4. the vision model decides (or rejects them all)
-    const idx = await deps.chooser(opts.photo, candidates, { name: opts.name, brand: opts.brand });
+    const idx = await deps.chooser(opts.photo ?? null, candidates, { name: opts.name, brand: opts.brand });
     return idx !== null && Number.isInteger(idx) && idx >= 0 && idx < candidates.length ? candidates[idx].url : null;
   } catch {
     return null;
