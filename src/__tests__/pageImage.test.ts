@@ -42,6 +42,7 @@ describe('extractImageCandidates', () => {
 });
 
 describe('pickProductImage', () => {
+  const other = 'https://www.other.com/p';
   const photo = { base64: 'AAAA', mime: 'image/jpeg' };
   const official = 'https://www.brand.com/p/1';
   const retailer = 'https://shop.example.com/p/1';
@@ -145,5 +146,28 @@ describe('pickProductImage', () => {
     expect(await pickProductImage({ pageUrls: ['https://a.example.com/'], photo }, { safeFetch: f, chooser, morePages: async () => { throw new Error('search down'); } })).toBeNull();
     expect(await pickProductImage({ pageUrls: ['https://a.example.com/'], photo }, { safeFetch: f, chooser, morePages: async () => [] })).toBeNull();
     expect(chooser).not.toHaveBeenCalled();
+  });
+
+  it('never offers or returns excluded pictures; falls through to the extra page search when only excluded ones exist', async () => {
+    const f = jest.fn(async (url: string) => {
+      if (url === official) return resp(200, pageHtml[official], url);
+      if (url === 'https://www.other.com/p') return resp(200, '<meta property="og:image" content="https://cdn.other.com/alt.jpg">', url);
+      if (url === 'https://cdn.other.com/alt.jpg') return resp(200, JPEG, url);
+      if (images[url]) return resp(200, images[url], url);
+      return resp(404, '', url);
+    });
+    const chooser = jest.fn<ReturnType<ImageChooser>, Parameters<ImageChooser>>(async () => 0);
+    const exclude = ['https://cdn.brand.com/front.jpg', 'https://cdn.brand.com/side.jpg'];
+    const url = await pickProductImage({ pageUrls: [official], photo, excludeUrls: exclude }, { safeFetch: f, chooser, morePages: async () => ['https://www.other.com/p'] });
+    expect(url).toBe('https://cdn.other.com/alt.jpg');
+    expect(chooser.mock.calls[0][1].map((c) => c.url)).toEqual(['https://cdn.other.com/alt.jpg']);
+  });
+
+  it('works without a photo and without page URLs (extra search only)', async () => {
+    const f = async (url: string) => (url === other ? resp(200, '<meta property="og:image" content="https://cdn.brand.com/front.jpg">', url) : url.endsWith('front.jpg') ? resp(200, JPEG, url) : resp(404, '', url));
+    const chooser = jest.fn<ReturnType<ImageChooser>, Parameters<ImageChooser>>(async () => 0);
+    const url = await pickProductImage({ pageUrls: [], photo: null, name: 'Turmeric', brand: 'Brand' }, { safeFetch: f, chooser, morePages: async () => [other] });
+    expect(url).toBe('https://cdn.brand.com/front.jpg');
+    expect(chooser.mock.calls[0][0]).toBeNull();
   });
 });

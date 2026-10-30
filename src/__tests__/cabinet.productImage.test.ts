@@ -46,18 +46,33 @@ describe('POST /cabinet/product-image', () => {
   it('validates the input', async () => {
     const bad = [
       {},
-      { ...body, imageBase64: undefined },
-      { ...body, pageUrls: [] },
+      { ...body, imageBase64: 123 },
+      { pageUrls: body.pageUrls }, // neither photo nor name
+      { imageBase64: 'AAAA', pageUrls: [] }, // no pages and no name
       { ...body, pageUrls: 'https://x.test' },
       { ...body, pageUrls: Array.from({ length: 5 }, (_, i) => `https://x.test/${i}`) },
       { ...body, pageUrls: ['javascript:alert(1)'] },
       { ...body, pageUrls: ['file:///etc/passwd'] },
       { ...body, pageUrls: [123] },
+      { pageUrls: [] },
+      { ...body, excludeUrls: 'x' },
+      { ...body, excludeUrls: ['javascript:alert(1)'] },
+      { ...body, excludeUrls: Array.from({ length: 11 }, (_, i) => `https://x.test/${i}`) },
     ];
     for (const b of bad) {
       const res = await request(app).post('/cabinet/product-image').send(b);
       expect(res.status).toBe(400);
     }
     expect(mockPick).not.toHaveBeenCalled();
+  });
+
+  it('retry: passes excludeUrls through; photo and pageUrls are optional when a name is given', async () => {
+    mockPick.mockResolvedValue(null);
+    await request(app).post('/cabinet/product-image').send({ ...body, excludeUrls: ['https://cdn.brand.com/front.jpg'] });
+    expect(mockPick.mock.calls[0][0]).toMatchObject({ excludeUrls: ['https://cdn.brand.com/front.jpg'] });
+    const res = await request(app).post('/cabinet/product-image').send({ name: 'Turmeric', brand: 'Brand' });
+    expect(res.status).toBe(200);
+    expect(mockPick.mock.calls[1][0]).toMatchObject({ pageUrls: [], photo: null, name: 'Turmeric' });
+    expect((await request(app).post('/cabinet/product-image').send({ imageBase64: 'AAAA' })).status).toBe(400); // photo but no pages and no name
   });
 });

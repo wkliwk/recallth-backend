@@ -1113,13 +1113,16 @@ Rules:
 const geminiImageChooser: ImageChooser = async (photo, candidates, hint) => {
   const model = getGenAI().getGenerativeModel({ model: MODELS.CHAT });
   const named = [hint.brand, hint.name].filter(Boolean).join(' ').slice(0, 160);
-  const parts: Array<string | { inlineData: { mimeType: string; data: string } }> = [
-    `Image A is the user's own photo of a product package${named ? ` (read as: ${named})` : ''}. The images B1..B${candidates.length} below are candidate pictures taken from web pages about the product. Choose the ONE candidate that best shows the FRONT of the SAME product as image A (same brand, product name, variant / flavour / strength): clear, in focus, uncropped, ideally a clean packshot on a plain background.
+  const rules = `Choose the ONE candidate that best shows the FRONT of the SAME product (same brand, product name, variant / flavour / strength): clear, in focus, uncropped, ideally a clean packshot on a plain background.
 Reject a candidate if it is a logo, banner, lifestyle or ambient photo, the back or side label, a nutrition-facts-only image, several products together, a different variant or pack size, or low quality.
-Return ONLY JSON: {"best": <1-based index of the best candidate, or null if none qualifies>}. Prefer null over a wrong match.`,
-    'Image A:',
-    { inlineData: { mimeType: photo.mime, data: photo.base64 } },
-  ];
+Return ONLY JSON: {"best": <1-based index of the best candidate, or null if none qualifies>}. Prefer null over a wrong match.`;
+  const parts: Array<string | { inlineData: { mimeType: string; data: string } }> = photo
+    ? [
+        `Image A is the user's own photo of a product package${named ? ` (read as: ${named})` : ''}. The images B1..B${candidates.length} below are candidate pictures taken from web pages about the product. ${rules} The product is the one in image A.`,
+        'Image A:',
+        { inlineData: { mimeType: photo.mime, data: photo.base64 } },
+      ]
+    : [`The product is: ${named || 'unknown'}. The images B1..B${candidates.length} below are candidate pictures taken from web pages about it. ${rules}`];
   candidates.forEach((c, i) => {
     parts.push(`B${i + 1}:`);
     parts.push({ inlineData: { mimeType: c.mime, data: c.base64 } });
@@ -1155,20 +1158,33 @@ async function findMorePages(name?: string, brand?: string): Promise<string[]> {
 // POST /cabinet/product-image — a clear front-facing picture of the product from its reference pages, verified by a
 // vision model against the user's photo. Returns { imageUrl } or { imageUrl: null }; never fails the client flow.
 router.post('/product-image', async (req: AuthRequest, res: Response): Promise<void> => {
-  const { imageBase64, mimeType, pageUrls, name, brand } = req.body as {
+  const { imageBase64, mimeType, pageUrls, name, brand, excludeUrls } = req.body as {
     imageBase64?: string;
     mimeType?: string;
     pageUrls?: unknown;
     name?: unknown;
     brand?: unknown;
+    excludeUrls?: unknown;
   };
 
-  if (!imageBase64 || typeof imageBase64 !== 'string') {
-    res.status(400).json({ success: false, data: null, error: 'imageBase64 is required' });
+  const hasName = typeof name === 'string' && name.trim().length >= 2;
+  if ((imageBase64 !== undefined && typeof imageBase64 !== 'string') || (!imageBase64 && !hasName)) {
+    res.status(400).json({ success: false, data: null, error: 'imageBase64 or name is required' });
     return;
   }
-  if (!Array.isArray(pageUrls) || pageUrls.length === 0 || pageUrls.length > 4 || pageUrls.some((u) => typeof u !== 'string' || !/^https?:\/\//i.test(u) || u.length > 2000)) {
-    res.status(400).json({ success: false, data: null, error: 'pageUrls must be 1-4 http(s) URLs' });
+  const badUrl = (u: unknown) => typeof u !== 'string' || !/^https?:\/\//i.test(u) || u.length > 2000;
+  const pages = pageUrls === undefined ? [] : pageUrls;
+  if (!Array.isArray(pages) || pages.length > 4 || pages.some(badUrl)) {
+    res.status(400).json({ success: false, data: null, error: 'pageUrls must be 0-4 http(s) URLs' });
+    return;
+  }
+  const excluded = excludeUrls === undefined ? [] : excludeUrls;
+  if (!Array.isArray(excluded) || excluded.length > 10 || excluded.some(badUrl)) {
+    res.status(400).json({ success: false, data: null, error: 'excludeUrls must be up to 10 http(s) URLs' });
+    return;
+  }
+  if (pages.length === 0 && !hasName) {
+    res.status(400).json({ success: false, data: null, error: 'pageUrls or name is required' });
     return;
   }
   const validMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
@@ -1177,7 +1193,7 @@ router.post('/product-image', async (req: AuthRequest, res: Response): Promise<v
   try {
     const picked = await Promise.race<string | null>([
       pickProductImage(
-        { pageUrls: pageUrls as string[], photo: { base64: imageBase64, mime: resolvedMime }, name: typeof name === 'string' ? name : undefined, brand: typeof brand === 'string' ? brand : undefined },
+        { pageUrls: pages as string[], excludeUrls: excluded as string[], photo: imageBase64 ? { base64: imageBase64, mime: resolvedMime } : null, name: typeof name === 'string' ? name : undefined, brand: typeof brand === 'string' ? brand : undefined },
         { chooser: geminiImageChooser, morePages: () => findMorePages(typeof name === 'string' ? name : undefined, typeof brand === 'string' ? brand : undefined) },
       ),
       new Promise<string | null>((resolve) => setTimeout(() => resolve(null), 25000)),
